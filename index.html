@@ -1,0 +1,1257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PulseDesk — CookUnity</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.10.1/Recharts.min.js" crossorigin></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    // Make recharts available as named exports
+    const { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } = Recharts;
+    // Make React hooks available globally for Babel transform
+    const { useState, useEffect, useRef, useCallback } = React;
+  </script>
+  <script type="text/babel" data-presets="react">
+
+const C = {
+  teal: "#1D9E75", tealLight: "#E1F5EE",
+  coral: "#D85A30", coralLight: "#FAECE7",
+  blue: "#378ADD", blueLight: "#E6F1FB", blueDark: "#185FA5",
+  amber: "#BA7517", amberLight: "#FAEEDA",
+  red: "#E24B4A", redLight: "#FCEBEB",
+  green: "#639922", greenLight: "#EAF3DE",
+  gray50: "#F1EFE8", gray100: "#D3D1C7", gray200: "#B4B2A9",
+  gray400: "#888780", gray600: "#5F5E5A", gray800: "#444441", gray900: "#2C2C2A",
+  purple: "#7F77DD", purpleLight: "#EEEDFE",
+};
+
+// Each agent's sheetId = the ID from their Google Sheet URL (/d/HERE/edit)
+// Sheets must be shared as "Anyone with the link can view"
+const SEED_AGENTS = [
+  { id: "ym", name: "Yeirmer Méndez",          avatar: "YM", role: "Lead",       sheetId: null },
+  { id: "mv", name: "Maria Vargas Moron",       avatar: "MV", role: "Specialist", sheetId: "1NjxVNWAMF-8bKqYjhUn2S6eC-MRs_VtMg2zgKx8uwlY" },
+  { id: "ap", name: "Angelo Paricela",          avatar: "AP", role: "Specialist", sheetId: "10CCX29fpTVe5yC5DguRXSOwQ6vGjkmLVhIkhSfGH6_s" },
+  { id: "sa", name: "Spencer Arenas",           avatar: "SA", role: "Specialist", sheetId: "1FQH3v5FgB8Jvsok-FN2LminTkIZ2xUjTLRHJrhg8fgI" },
+  { id: "mt", name: "Matias Tamariz",           avatar: "MT", role: "Specialist", sheetId: "1zvkr2fcBf9q6wT-bwaiqWfZw7e8bbIZ04huOkEwHTXQ" },
+  { id: "in", name: "Ignacio Nuñez",            avatar: "IN", role: "Specialist", sheetId: "19riukmqzbPrDl1yKOnltRgtwKaiE6_a4BK_n1HwkV2k" },
+  { id: "ye", name: "Yamely Elescano Capcha",   avatar: "YE", role: "Specialist", sheetId: "1YIfAKpXE8fwqEHAe8mkEMLTkW4qVAKRNH0itO5gdNZI" },
+  { id: "gs", name: "George Serna Paz",         avatar: "GS", role: "Specialist", sheetId: "1oF7_twA9Y2hkevLas0ja1DjmWbe70l0k-9zi34r5mGQ" },
+  { id: "kn", name: "Kaori Nakashima Tarazona", avatar: "KN", role: "Specialist", sheetId: "1Uw2mMdZE7lneUa8HTJYilNoAna_w6jvHmfBNDSOzE1I" },
+];
+
+// ── Google Sheets data fetcher ─────────────────────────────────────────────
+// Uses the gviz/tq endpoint — public, no API key, proper CORS headers.
+// Sheet must be shared as "Anyone with the link can view".
+// Each tab has a different gid (sheet tab ID). We export multiple tabs.
+
+const fetchSheetTab = async (sheetId, tabName) => {
+  // encodeURIComponent the sheet name for the query
+  const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tabName)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} for tab "${tabName}"`);
+  return await res.text();
+};
+
+// Tab names in each agent's sheet
+const SHEET_TABS = {
+  metrics: "2026",        // Weekly + Monthly metrics tab
+  iqs:     "IQS Reviews", // IQS reviews tab
+  csat:    "CSAT Reviews", // CSAT reviews tab
+};
+
+const parseCSV = (text) => {
+  const lines = text.trim().split("\n");
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(",").map(h =>
+    h.trim().replace(/^"|"$/g, "").toLowerCase()
+      .replace(/[()]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "")
+  );
+  return lines.slice(1).map(line => {
+    const vals = []; let cur = "", inQ = false;
+    for (const ch of line) {
+      if (ch === '"') inQ = !inQ;
+      else if (ch === ',' && !inQ) { vals.push(cur.trim()); cur = ""; }
+      else cur += ch;
+    }
+    vals.push(cur.trim());
+    return Object.fromEntries(headers.map((h, i) => [h, (vals[i] ?? "").replace(/^"|"$/g, "")]));
+  });
+};
+
+const pct = (str) => {
+  if (!str) return null;
+  const clean = str.replace(/[%\\-]/g, "").trim();
+  if (clean === "" || clean === "%" ) return null;
+  const n = parseFloat(clean);
+  return isNaN(n) ? null : n;
+};
+const num = (str) => {
+  const n = parseFloat((str || "").replace(/[^0-9.-]/g, ""));
+  return isNaN(n) ? null : n;
+};
+
+// Parse the "2026" metrics tab — finds Week rows and Month rows
+const parseMetricsTab = (csvText) => {
+  const rows = parseCSV(csvText);
+  const weekly = [], monthly = [];
+  for (const r of rows) {
+    // Header keys vary — try all known variants
+    const weekVal  = r["week"] || r["week_"] || "";
+    const monthVal = r["month"] || "";
+    // TPH: "tph_5_"  AHT: "aht_720_sec_"  CSAT: "csat_80_"  IQS: "iqs_85_"
+    const tphV   = num(r["tph_5_"] || r["tph__5_"] || r["tph_5"] || r["tph"] || "");
+    const ahtSec = num(r["aht_720_sec_"] || r["aht__720_sec_"] || r["aht_720_sec"] || r["aht"] || "");
+    const csatV  = pct(r["csat_80_"] || r["csat__80_"] || r["csat_80"] || r["csat"] || "");
+    const iqsV   = pct(r["iqs_85_"] || r["iqs__85_"] || r["iqs_85"] || r["iqs"] || "");
+
+    if (weekVal && /^W\d+/.test(weekVal) && tphV !== null) {
+      weekly.push({ week: weekVal, tph: tphV, ahtSec, csat: csatV, iqs: iqsV });
+    }
+    if (monthVal && /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i.test(monthVal) && tphV !== null) {
+      monthly.push({ month: monthVal, tph: tphV, ahtSec, csat: csatV, iqs: iqsV });
+    }
+  }
+  return { weekly, monthly };
+};
+
+// Parse the "IQS Reviews" tab
+const parseIQSTab = (csvText) => {
+  const rows = parseCSV(csvText);
+  const iqs = [];
+  for (const r of rows) {
+    const id       = r["review_id"] || r["id"] || "";
+    const reviewer = r["reviewer"] || "";
+    const score    = pct(r["review_score"] || r["score"] || "");
+    const date     = (r["review_created"] || r["date"] || "").slice(0, 10);
+    if (id && reviewer && score !== null) {
+      iqs.push({ id, reviewer, score, date });
+    }
+  }
+  return iqs;
+};
+
+// Parse the "CSAT Reviews" tab
+const parseCSATTab = (csvText) => {
+  const rows = parseCSV(csvText);
+  const csat = [];
+  for (const r of rows) {
+    const channel = r["ticket_channel"] || r["channel"] || "";
+    const reason  = r["contact_reason_for_customers"] || r["contact_reason"] || r["reason"] || "";
+    const sat     = r["changes___new_value"] || r["changes__new_value"] || r["satisfaction"] || "";
+    const comment = r["customer_s_comment"] || r["customer_comment"] || r["comment"] || "";
+    const date    = (r["date"] || r["week_of_year"] || "").slice(0, 10);
+    const ticketId = r["ticket_id"] || "";
+    if (channel && reason && (sat === "good" || sat === "bad")) {
+      csat.push({ date, channel, reason, satisfaction: sat === "good" ? "Good" : "Bad", comment: comment.trim(), ticketId });
+    }
+  }
+  return csat;
+};
+
+// ── Pre-seeded real data from the sheets we already read ─────────────────────
+const REAL_DATA = {
+  mv: {
+    weekly: [
+      { week:"W2",  tph:10.75, ahtSec:63,  csat:100.0, iqs:83.33 },
+      { week:"W3",  tph:11.15, ahtSec:59,  csat:null,  iqs:null  },
+      { week:"W4",  tph:14.99, ahtSec:65,  csat:66.7,  iqs:100.0 },
+      { week:"W5",  tph:6.65,  ahtSec:364, csat:93.8,  iqs:100.0 },
+      { week:"W6",  tph:4.84,  ahtSec:446, csat:90.9,  iqs:96.67 },
+      { week:"W7",  tph:3.72,  ahtSec:193, csat:81.8,  iqs:84.29 },
+      { week:"W8",  tph:6.19,  ahtSec:283, csat:76.5,  iqs:91.67 },
+      { week:"W9",  tph:4.17,  ahtSec:202, csat:100.0, iqs:100.0 },
+      { week:"W10", tph:4.83,  ahtSec:433, csat:70.6,  iqs:92.50 },
+      { week:"W11", tph:6.60,  ahtSec:266, csat:84.6,  iqs:83.33 },
+      { week:"W12", tph:6.42,  ahtSec:263, csat:62.5,  iqs:100.0 },
+      { week:"W13", tph:7.03,  ahtSec:271, csat:76.19, iqs:94.0  },
+      { week:"W14", tph:5.93,  ahtSec:394, csat:66.7,  iqs:100.0 },
+      { week:"W15", tph:4.75,  ahtSec:381, csat:33.3,  iqs:76.67 },
+      { week:"W16", tph:5.41,  ahtSec:339, csat:83.3,  iqs:80.0  },
+    ],
+    monthly: [
+      { month:"Jan", tph:10.35, ahtSec:134, csat:90.5, iqs:97.0 },
+      { month:"Feb", tph:4.77,  ahtSec:295, csat:84.6, iqs:93.0 },
+      { month:"Mar", tph:4.09,  ahtSec:473, csat:73.6, iqs:93.0 },
+    ],
+    iqs: [
+      { id:"1003718294", reviewer:"Yessica Nagib",       score:100, date:"2026-01-07" },
+      { id:"1003684031", reviewer:"Yessica Nagib",       score:100, date:"2026-01-06" },
+      { id:"1003785506", reviewer:"Cecilia Gabet",       score:50,  date:"2026-01-09" },
+      { id:"1005045704", reviewer:"Yessica Nagib",       score:100, date:"2026-02-20" },
+      { id:"1004966147", reviewer:"Maria Fernanda Lara", score:50,  date:"2026-02-18" },
+      { id:"1004808969", reviewer:"Yessica Nagib",       score:70,  date:"2026-02-12" },
+      { id:"1004693881", reviewer:"Johans Breidenbach",  score:50,  date:"2026-02-09" },
+      { id:"1004694056", reviewer:"Maria Fernanda Lara", score:100, date:"2026-02-09" },
+      { id:"1005424466", reviewer:"Cecilia Gabet",       score:70,  date:"2026-03-05" },
+      { id:"1005473231", reviewer:"Yessica Nagib",       score:100, date:"2026-03-06" },
+      { id:"1006656052", reviewer:"Yessica Nagib",       score:100, date:"2026-04-16" },
+      { id:"1006650017", reviewer:"Cecilia Gabet",       score:20,  date:"2026-04-16" },
+      { id:"1006653156", reviewer:"Valeria Leon",        score:80,  date:"2026-04-16" },
+    ],
+    csat: [
+      { date:"2026-01-18", channel:"Email",    reason:"Meal Experience",     satisfaction:"Good", comment:"It was clear Marice understood and empathized with the issue right from the start.", ticketId:"1800364" },
+      { date:"2026-01-18", channel:"Email",    reason:"Other",               satisfaction:"Bad",  comment:"Stop emailing me", ticketId:"1800517" },
+      { date:"2026-01-25", channel:"Email",    reason:"Delivery Experience", satisfaction:"Good", comment:"Marice responded to my concerns. I will always stick with this one.", ticketId:"1825718" },
+      { date:"2026-01-26", channel:"Email",    reason:"Delivery Experience", satisfaction:"Good", comment:"After dealing with several agents who were not able to provide the needed outcome, Marice came to the rescue.", ticketId:"1825724" },
+      { date:"2026-01-27", channel:"Web",      reason:"Meal Experience",     satisfaction:"Bad",  comment:"", ticketId:"1825250" },
+      { date:"2026-02-01", channel:"Api",      reason:"Delivery Experience", satisfaction:"Good", comment:"Just unhappy with the lack of communication and no response until after 5 Tuesday.", ticketId:"1832903" },
+      { date:"2026-02-02", channel:"Web",      reason:"Account Management",  satisfaction:"Bad",  comment:"", ticketId:"1871978" },
+      { date:"2026-02-04", channel:"Email",    reason:"Billing and Payments",satisfaction:"Good", comment:"Marice was prompt and attentive and dealt with our concern immediately. It was a pleasure.", ticketId:"1883740" },
+      { date:"2026-02-05", channel:"Email",    reason:"User Experience",     satisfaction:"Good", comment:"AI chat bot was terrible. Human agent 'Marice' should be the type of person that handles queries always!", ticketId:"1892453" },
+      { date:"2026-02-06", channel:"Api",      reason:"Meal Experience",     satisfaction:"Bad",  comment:"I'm not looking for credit, I have no idea what you sent me as it does not look like the Bass that I ordered.", ticketId:"1892098" },
+      { date:"2026-02-15", channel:"Api",      reason:"Order Management",    satisfaction:"Good", comment:"Fast, friendly and efficient! Great customer service!", ticketId:"1930269" },
+      { date:"2026-02-17", channel:"Api",      reason:"Order Management",    satisfaction:"Bad",  comment:"I requested a skip in the app, the skip did not save or go through, but I was not offered a cancellation.", ticketId:"1931089" },
+      { date:"2026-02-18", channel:"Api",      reason:"Billing and Payments",satisfaction:"Bad",  comment:"Didn't get what I wanted and only walked away with another reminder of how I'm paying too much.", ticketId:"1943297" },
+    ],
+    dsat: [
+      { week:"W6", ticketId:"1800517", summary:"Customer complained about receiving unwanted marketing emails", coaching:"Ensure unsubscribe requests are processed promptly. Empathize before deflecting." },
+      { week:"W8", ticketId:"1892098", summary:"Customer unhappy with meal substitution — credit offer not satisfying", coaching:"When substitution issues occur, acknowledge uncertainty and escalate for product review. Credit alone doesn't rebuild product trust." },
+    ],
+    notes: "",
+  },
+  gs: {
+    weekly: [
+      { week:"W2",  tph:2.85, ahtSec:1272, csat:87.5,  iqs:63.33, dsat:0 },
+      { week:"W3",  tph:3.05, ahtSec:1216, csat:90.0,  iqs:83.75, dsat:0 },
+      { week:"W5",  tph:4.10, ahtSec:898,  csat:86.7,  iqs:97.50, dsat:0 },
+      { week:"W6",  tph:3.58, ahtSec:1025, csat:63.6,  iqs:86.25, dsat:1 },
+      { week:"W7",  tph:3.08, ahtSec:408,  csat:66.7,  iqs:91.67, dsat:0 },
+      { week:"W8",  tph:3.35, ahtSec:1100, csat:77.8,  iqs:100.0, dsat:0 },
+      { week:"W9",  tph:4.18, ahtSec:897,  csat:77.8,  iqs:81.25, dsat:1 },
+      { week:"W10", tph:4.76, ahtSec:783,  csat:80.0,  iqs:90.0,  dsat:0 },
+      { week:"W11", tph:4.50, ahtSec:806,  csat:93.75, iqs:85.71, dsat:0 },
+      { week:"W12", tph:4.39, ahtSec:797,  csat:73.68, iqs:96.67, dsat:0 },
+      { week:"W13", tph:4.86, ahtSec:749,  csat:78.95, iqs:90.0,  dsat:0 },
+      { week:"W14", tph:4.38, ahtSec:821,  csat:66.67, iqs:100.0, dsat:1 },
+      { week:"W15", tph:4.43, ahtSec:819,  csat:71.43, iqs:98.57, dsat:0 },
+      { week:"W16", tph:4.91, ahtSec:733,  csat:85.7,  iqs:100.0, dsat:0 },
+      { week:"W17", tph:4.80, ahtSec:755,  csat:73.68, iqs:91.11, dsat:0 },
+    ],
+    monthly: [
+      { month:"Jan", tph:3.29, ahtSec:1146, csat:89.7,  iqs:86.32 },
+      { month:"Feb", tph:3.58, ahtSec:831,  csat:72.7,  iqs:88.93 },
+      { month:"Mar", tph:4.63, ahtSec:784,  csat:79.5,  iqs:92.2  },
+      { month:"Apr", tph:4.67, ahtSec:775,  csat:75.93, iqs:95.71 },
+    ],
+    iqs: [
+      { id:"1003792567", reviewer:"Valeria Leon",        score:20,  date:"2026-01-10" },
+      { id:"1003782562", reviewer:"Yessica Nagib",       score:70,  date:"2026-01-09" },
+      { id:"1003681899", reviewer:"Yessica Nagib",       score:100, date:"2026-01-06" },
+      { id:"1004421215", reviewer:"Maria Fernanda Lara", score:100, date:"2026-01-30" },
+      { id:"1004382514", reviewer:"Cecilia Gabet",       score:100, date:"2026-01-29" },
+      { id:"1004958621", reviewer:"Yessica Nagib",       score:100, date:"2026-02-18" },
+      { id:"1004963454", reviewer:"Johans Breidenbach",  score:100, date:"2026-02-18" },
+      { id:"1006627277", reviewer:"Valeria Leon",        score:100, date:"2026-04-15" },
+      { id:"1006615801", reviewer:"Cecilia Gabet",       score:100, date:"2026-04-15" },
+      { id:"1006858067", reviewer:"Johans Breidenbach",  score:100, date:"2026-04-23" },
+      { id:"1006852888", reviewer:"Yessica Nagib",       score:60,  date:"2026-04-23" },
+    ],
+    csat: [
+      { date:"2026-01-03", channel:"Web",        reason:"Order Management",    satisfaction:"Good", comment:"I am grateful for the attention to my problem. Cookunity is first class. Thank you! Giorgio!", ticketId:"1754814" },
+      { date:"2026-01-07", channel:"Messaging",  reason:"Account Management",  satisfaction:"Bad",  comment:"I got disconnected and was unable to reach a conclusion.", ticketId:"1768341" },
+      { date:"2026-01-12", channel:"Email",      reason:"Delivery Experience", satisfaction:"Good", comment:"He was timely and solutions oriented towards how he addressed my delivery issue.", ticketId:"1779700" },
+      { date:"2026-02-05", channel:"Email",      reason:"Order Experience",    satisfaction:"Good", comment:"Response was quick and commensurate with the problem that I experienced.", ticketId:"1887060" },
+      { date:"2026-02-06", channel:"Messaging",  reason:"Order Management",    satisfaction:"Bad",  comment:"Agent said they would reach out, and then someone from 'operations' follows up ignoring the issue.", ticketId:"1900885" },
+      { date:"2026-02-15", channel:"Api",        reason:"Billing and Payments",satisfaction:"Good", comment:"His response was clear and concise. He explained thoroughly why I had not received the credit.", ticketId:"1929482" },
+      { date:"2026-03-09", channel:"Email",      reason:"Delivery Experience", satisfaction:"Good", comment:"The support was fast and Giorgio took it to the next level for problem solving. Thanks!!", ticketId:"2068542" },
+      { date:"2026-04-06", channel:"Web",        reason:"Billing and Payments",satisfaction:"Bad",  comment:"The agent provided conflicting information — stated amount was applied as store credit and could not be refunded.", ticketId:"2167686" },
+      { date:"2026-04-21", channel:"Api",        reason:"Order Management",    satisfaction:"Good", comment:"Giorgio was amazing!", ticketId:"2218811" },
+      { date:"2026-04-23", channel:"Messaging",  reason:"Product and Service", satisfaction:"Good", comment:"Giorgio was very polite, patient & helpful.", ticketId:"2227564" },
+    ],
+    dsat: [
+      { week:"W6",  ticketId:"1887769", summary:"Customer was unhappy with meal recommendations and chose to cancel. Agent processed the cancellation without exploring alternatives or attempting retention.", coaching:"You handled the request efficiently, which is important. This was a great opportunity to try a light retention approach. When customers mention specific dislikes, guide them toward solutions — like adjusting preferences or avoiding certain ingredients. Try to balance efficiency with curiosity." },
+      { week:"W9",  ticketId:"1999467", summary:"Customer wanted to change meals but experienced delays. Due to slow response time, the customer became frustrated and canceled.", coaching:"You ultimately completed the request, which is positive. Going forward, managing expectations during delays is crucial. If you anticipate a wait, let the customer know upfront and keep them updated. Even a quick check-in can reassure them that they haven't been forgotten." },
+      { week:"W14", ticketId:"2147267", summary:"Customer requested order cancellation/donation, which was approved but ultimately failed. Agent didn't escalate or manage expectations properly, and the order was still delivered.", coaching:"You were working within a complex situation. In time-sensitive cases, it's important to clearly communicate uncertainty and take proactive steps like escalation. Letting the customer know approval isn't guaranteed — and acting quickly — helps prevent mismatched expectations and builds trust." },
+    ],
+    notes: "",
+  },
+
+  // Spencer Arenas
+  sa: {
+    weekly: [
+      { week:"W3",  tph:5.83, ahtSec:404, csat:100.0, iqs:100.0, dsat:0 },
+      { week:"W4",  tph:6.51, ahtSec:412, csat:86.4,  iqs:100.0, dsat:0 },
+      { week:"W5",  tph:6.19, ahtSec:253, csat:85.7,  iqs:100.0, dsat:0 },
+      { week:"W6",  tph:5.42, ahtSec:390, csat:90.5,  iqs:91.67, dsat:1 },
+      { week:"W7",  tph:5.87, ahtSec:398, csat:81.0,  iqs:61.43, dsat:0 },
+      { week:"W8",  tph:5.81, ahtSec:413, csat:75.0,  iqs:100.0, dsat:0 },
+      { week:"W9",  tph:6.18, ahtSec:347, csat:100.0, iqs:96.25, dsat:0 },
+      { week:"W10", tph:6.12, ahtSec:430, csat:90.9,  iqs:92.50, dsat:0 },
+      { week:"W11", tph:4.65, ahtSec:465, csat:87.5,  iqs:96.25, dsat:0 },
+      { week:"W12", tph:5.84, ahtSec:384, csat:88.9,  iqs:100.0, dsat:0 },
+      { week:"W13", tph:5.98, ahtSec:435, csat:100.0, iqs:90.0,  dsat:0 },
+      { week:"W14", tph:5.70, ahtSec:421, csat:92.31, iqs:100.0, dsat:0 },
+      { week:"W15", tph:5.75, ahtSec:373, csat:84.62, iqs:100.0, dsat:0 },
+      { week:"W16", tph:5.59, ahtSec:374, csat:100.0, iqs:null,  dsat:0 },
+    ],
+    monthly: [
+      { month:"Jan", tph:6.17, ahtSec:344, csat:89.9, iqs:100.0 },
+      { month:"Feb", tph:5.82, ahtSec:387, csat:85.1, iqs:87.0  },
+      { month:"Mar", tph:5.30, ahtSec:434, csat:89.7, iqs:94.8  },
+    ],
+    iqs: [
+      { id:"1004422154", reviewer:"CookUnity",          score:100, date:"2026-01-30" },
+      { id:"1004384764", reviewer:"Yessica Nagib",       score:100, date:"2026-01-29" },
+      { id:"1004843506", reviewer:"Maria Fernanda Lara", score:20,  date:"2026-02-13" },
+      { id:"1004808736", reviewer:"Yessica Nagib",       score:50,  date:"2026-02-12" },
+      { id:"1004837043", reviewer:"Yessica Nagib",       score:100, date:"2026-02-13" },
+      { id:"1006575530", reviewer:"Yessica Nagib",       score:100, date:"2026-04-14" },
+      { id:"1006581816", reviewer:"Johans Breidenbach",  score:100, date:"2026-04-14" },
+      { id:"1006583091", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-14" },
+    ],
+    csat: [
+      { date:"2026-01-13", channel:"Messaging", reason:"Account Management",  satisfaction:"Good", comment:"Spencer was knowledgeable, patient and professional during our interaction.", ticketId:"1783902" },
+      { date:"2026-01-20", channel:"Email",     reason:"Order Experience",    satisfaction:"Good", comment:"I had an issue with an order where what I ordered was not delivered and Spencer fixed it and gave me a discount even though I didn't ask.", ticketId:"1806347" },
+      { date:"2026-01-24", channel:"Api",       reason:"Meal Experience",     satisfaction:"Good", comment:"Spencer was very helpful, responsive, and took care of my issue quickly. He asked for pictures and removed the charge.", ticketId:"1822360" },
+      { date:"2026-01-28", channel:"Api",       reason:"Delivery Experience", satisfaction:"Bad",  comment:"I am very unhappy how CookUnity is handling the delay.", ticketId:"1837297" },
+      { date:"2026-02-15", channel:"Api",       reason:"Delivery Experience", satisfaction:"Good", comment:"Spencer was personable, professional, and super-responsive! He genuinely cared about my issue.", ticketId:"1929485" },
+      { date:"2026-02-19", channel:"Web",       reason:"Account Management",  satisfaction:"Bad",  comment:"I was blocked from the app instead of getting an apology. Horrible service and business model.", ticketId:"1944073" },
+      { date:"2026-03-26", channel:"Web",       reason:"Account Management",  satisfaction:"Good", comment:"Probably one of the best customer service experiences of any company I have ever dealt with.", ticketId:"2130626" },
+      { date:"2026-04-08", channel:"Api",       reason:"Order Management",    satisfaction:"Good", comment:"I appreciate Spencer escalating my request to his manager to cancel my order.", ticketId:"2178065" },
+    ],
+    dsat: [
+      { week:"W6", ticketId:"1896398", summary:"Customer reported a duplicate order. Issue was resolved with cancellation and credit, but the response felt generic and came across as condescending.", coaching:"You resolved the issue correctly, which is a solid foundation. Now the focus is on tone and personalization. Try to adapt your language to feel more conversational and less templated — especially in sensitive situations. Reading your message out loud before sending can help catch anything that might feel overly formal or impersonal." },
+    ],
+    notes: "",
+  },
+
+  // Angelo Paricela
+  ap: {
+    weekly: [
+      { week:"W2",  tph:3.55, ahtSec:613, csat:100.0, iqs:100.0, dsat:0 },
+      { week:"W3",  tph:3.17, ahtSec:833, csat:100.0, iqs:90.0,  dsat:0 },
+      { week:"W4",  tph:3.79, ahtSec:572, csat:60.0,  iqs:77.14, dsat:0 },
+      { week:"W5",  tph:4.35, ahtSec:542, csat:92.3,  iqs:100.0, dsat:0 },
+      { week:"W6",  tph:4.56, ahtSec:514, csat:80.0,  iqs:81.25, dsat:0 },
+      { week:"W7",  tph:4.71, ahtSec:486, csat:100.0, iqs:95.0,  dsat:0 },
+      { week:"W8",  tph:3.45, ahtSec:622, csat:71.4,  iqs:88.33, dsat:1 },
+      { week:"W9",  tph:3.48, ahtSec:619, csat:86.7,  iqs:92.22, dsat:0 },
+      { week:"W10", tph:3.32, ahtSec:654, csat:100.0, iqs:93.75, dsat:0 },
+      { week:"W11", tph:3.51, ahtSec:585, csat:100.0, iqs:97.14, dsat:0 },
+      { week:"W12", tph:3.86, ahtSec:592, csat:80.0,  iqs:96.25, dsat:0 },
+      { week:"W13", tph:3.99, ahtSec:693, csat:91.7,  iqs:100.0, dsat:0 },
+      { week:"W14", tph:3.50, ahtSec:697, csat:90.9,  iqs:96.67, dsat:0 },
+      { week:"W15", tph:4.23, ahtSec:724, csat:92.3,  iqs:93.75, dsat:0 },
+      { week:"W16", tph:3.62, ahtSec:701, csat:75.0,  iqs:100.0, dsat:0 },
+      { week:"W17", tph:4.19, ahtSec:616, csat:66.67, iqs:93.33, dsat:0 },
+    ],
+    monthly: [
+      { month:"Jan", tph:3.74, ahtSec:638, csat:89.1,  iqs:91.0  },
+      { month:"Feb", tph:3.99, ahtSec:560, csat:84.2,  iqs:89.1  },
+      { month:"Mar", tph:3.59, ahtSec:648, csat:92.16, iqs:null  },
+      { month:"Apr", tph:3.96, ahtSec:686, csat:88.46, iqs:null  },
+    ],
+    iqs: [
+      { id:"1006690192", reviewer:"Cecilia Gabet",       score:100, date:"2026-04-17" },
+      { id:"1006699216", reviewer:"Valeria Leon",        score:100, date:"2026-04-17" },
+      { id:"1006691911", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-17" },
+      { id:"1006427779", reviewer:"Yessica Nagib",       score:50,  date:"2026-04-08" },
+      { id:"1006480908", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-10" },
+      { id:"1006244225", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-01" },
+      { id:"1006247595", reviewer:"Cecilia Gabet",       score:100, date:"2026-04-01" },
+    ],
+    csat: [
+      { date:"2026-03-29", channel:"Web",      reason:"Account Management",  satisfaction:"Good", comment:"Angelo understood my situation and offered appropriate assistance. His help was truly valuable — it was his support that prompted me to reactivate my account.", ticketId:"2149213" },
+      { date:"2026-04-06", channel:"Email",    reason:"Account Management",  satisfaction:"Good", comment:"I felt like you all understood my position without making me feel embarrassed about it. Your employee was very kind.!", ticketId:"2168488" },
+      { date:"2026-04-07", channel:"Email",    reason:"Order Experience",    satisfaction:"Good", comment:"Above and beyond recovery for the mishap I experienced. I truly felt taken care of with empathy from the Cook Unity team.", ticketId:"2169496" },
+      { date:"2026-04-07", channel:"Web",      reason:"Account Management",  satisfaction:"Bad",  comment:"I did not order any food. Quit bothering me", ticketId:"2174996" },
+      { date:"2026-04-14", channel:"Api",      reason:"Delivery Experience", satisfaction:"Bad",  comment:"My delivery was actually at 9pm, an hour past the final delivery window, with no outreach or communication done.", ticketId:"2195241" },
+      { date:"2026-04-17", channel:"Web",      reason:"Account Management",  satisfaction:"Good", comment:"He went above and beyond in my experience with customer service.", ticketId:"2174519" },
+      { date:"2026-04-21", channel:"Messaging",reason:"Account Management",  satisfaction:"Good", comment:"Angelo was quick to assist and left the door open for the discount they offered should I decide to return. A-1 support.", ticketId:"2222858" },
+    ],
+    dsat: [
+      { week:"W8", ticketId:"1934010", summary:"Customer wanted a discount to stay subscribed but received a generic response and no retention effort, leading to dissatisfaction.", coaching:"You acknowledged the request, which is a good start. In these cases, personalization and empathy are key — especially when a customer expresses a desire to stay. Try to recognize that intent and explore options, like escalating for a better offer or suggesting alternatives. Showing effort here can make a big difference." },
+    ],
+    notes: "",
+  },
+
+  // Yamely Elescano Capcha
+  ye: {
+    weekly: [
+      { week:"W1",  tph:3.82, ahtSec:812,  csat:100.0, iqs:null,  dsat:0 },
+      { week:"W2",  tph:3.33, ahtSec:957,  csat:75.0,  iqs:100.0, dsat:0 },
+      { week:"W3",  tph:3.14, ahtSec:788,  csat:77.8,  iqs:83.33, dsat:0 },
+      { week:"W4",  tph:3.11, ahtSec:579,  csat:40.0,  iqs:88.75, dsat:0 },
+      { week:"W5",  tph:3.35, ahtSec:630,  csat:83.3,  iqs:96.25, dsat:0 },
+      { week:"W6",  tph:3.34, ahtSec:640,  csat:90.9,  iqs:81.25, dsat:0 },
+      { week:"W7",  tph:3.09, ahtSec:573,  csat:80.0,  iqs:95.71, dsat:1 },
+      { week:"W8",  tph:3.81, ahtSec:599,  csat:73.3,  iqs:91.43, dsat:0 },
+      { week:"W9",  tph:3.71, ahtSec:527,  csat:81.3,  iqs:92.50, dsat:0 },
+      { week:"W10", tph:3.82, ahtSec:468,  csat:69.2,  iqs:100.0, dsat:0 },
+      { week:"W11", tph:3.48, ahtSec:758,  csat:60.0,  iqs:88.75, dsat:0 },
+      { week:"W12", tph:3.78, ahtSec:522,  csat:72.2,  iqs:83.33, dsat:0 },
+      { week:"W13", tph:4.00, ahtSec:536,  csat:81.8,  iqs:91.43, dsat:0 },
+      { week:"W14", tph:4.03, ahtSec:551,  csat:78.95, iqs:95.0,  dsat:1 },
+    ],
+    monthly: [
+      { month:"Jan", tph:3.22, ahtSec:756, csat:70.3,  iqs:87.65 },
+      { month:"Feb", tph:3.59, ahtSec:588, csat:80.7,  iqs:91.67 },
+      { month:"Mar", tph:3.85, ahtSec:618, csat:72.7,  iqs:90.57 },
+    ],
+    iqs: [
+      { id:"1003786043", reviewer:"Johans Breidenbach",  score:100, date:"2026-01-09" },
+      { id:"1003786402", reviewer:"Cecilia Gabet",       score:100, date:"2026-01-09" },
+      { id:"1004490021", reviewer:"Valeria Leon",        score:50,  date:"2026-02-02" },
+      { id:"1004523721", reviewer:"Cecilia Gabet",       score:20,  date:"2026-02-03" },
+      { id:"1005697781", reviewer:"Yessica Nagib",       score:70,  date:"2026-03-13" },
+      { id:"1005698131", reviewer:"Johans Breidenbach",  score:100, date:"2026-03-13" },
+      { id:"1006081417", reviewer:"Yessica Nagib",       score:100, date:"2026-03-26" },
+      { id:"1006351475", reviewer:"Johans Breidenbach",  score:100, date:"2026-04-06" },
+    ],
+    csat: [
+      { date:"2026-01-14", channel:"Messaging", reason:"Delivery Experience", satisfaction:"Good", comment:"Yamely responded right away & worked to solve our issues. Almost like a phone call! Thank you Yamely.", ticketId:"1788029" },
+      { date:"2026-01-26", channel:"Email",     reason:"Delivery Experience", satisfaction:"Good", comment:"Yamely Elescano is the only member out of five who ACTUALLY HELPED ME. He saved you from losing several accounts.", ticketId:"1824977" },
+      { date:"2026-01-29", channel:"Web",       reason:"User Experience",     satisfaction:"Good", comment:"I'm excited to rejoin and enjoy the delicious convenient meals. Yamely Elescano is so kind and fully addressed my concerns.", ticketId:"1850266" },
+      { date:"2026-01-31", channel:"Api",       reason:"Order Experience",    satisfaction:"Good", comment:"Yamely was incredibly kind, thoughtful, and helpful. I truly feel that our issue was escalated properly and taken care of.", ticketId:"1860179" },
+      { date:"2026-02-07", channel:"Web",       reason:"Billing and Payments",satisfaction:"Good", comment:"I appreciate how Yamely handled my order, explaining that the discount needed to be applied manually for each of my next 4 orders.", ticketId:"1886756" },
+      { date:"2026-02-15", channel:"Email",     reason:"Delivery Experience", satisfaction:"Good", comment:"Yamely was genuinely understanding and thorough. She honestly made me feel heard and treated fairly.", ticketId:"1922305" },
+      { date:"2026-02-20", channel:"Messaging", reason:"Billing and Payments",satisfaction:"Good", comment:"Yamely was unfailingly kind/professional/helpful and resolved my minor problem and followed through, as promised.", ticketId:"1956337" },
+      { date:"2026-03-06", channel:"Twilio SMS",reason:"Order Management",    satisfaction:"Good", comment:"After days of ineffective help through e-mail, I'm so grateful that I used your text line and got connected to Yamely.", ticketId:"2060595" },
+    ],
+    dsat: [
+      { week:"W7",  ticketId:"1893955", summary:"Customer requested an address update but provided incomplete details. Agent asked for more information without attempting to validate the address independently, leading to no resolution.", coaching:"You followed the right instinct in seeking accurate information. To enhance your efficiency, try taking an extra step to validate what's already available — like checking the address externally. This can save time and reduce effort for the customer. Aim to combine their input with your own investigation." },
+      { week:"W14", ticketId:"2157899", summary:"Customer reported damaged delivery but couldn't provide photos. The agent requested them again instead of exploring alternatives, leaving the issue unresolved.", coaching:"You followed the standard process, which is important. When customers can't meet certain requirements, this is a great moment to apply flexibility. Submitting a Wabi or requesting an exception shows empathy and helps move things forward while maintaining a positive experience." },
+    ],
+    notes: "",
+  },
+
+  // Ignacio Nuñez
+  in: {
+    weekly: [
+      { week:"W2",  tph:5.30, ahtSec:371, csat:90.5, iqs:80.0,  dsat:0 },
+      { week:"W3",  tph:null, ahtSec:null,csat:71.4, iqs:100.0, dsat:0 },
+      { week:"W4",  tph:5.97, ahtSec:371, csat:72.2, iqs:100.0, dsat:0 },
+      { week:"W5",  tph:6.43, ahtSec:260, csat:77.8, iqs:100.0, dsat:0 },
+      { week:"W6",  tph:5.19, ahtSec:452, csat:91.3, iqs:90.0,  dsat:0 },
+      { week:"W7",  tph:4.61, ahtSec:438, csat:87.5, iqs:95.0,  dsat:0 },
+      { week:"W8",  tph:5.62, ahtSec:383, csat:76.2, iqs:92.9,  dsat:0 },
+      { week:"W10", tph:5.73, ahtSec:357, csat:90.0, iqs:91.1,  dsat:0 },
+      { week:"W11", tph:4.62, ahtSec:394, csat:77.8, iqs:100.0, dsat:0 },
+      { week:"W12", tph:6.38, ahtSec:308, csat:81.0, iqs:93.3,  dsat:0 },
+      { week:"W13", tph:5.53, ahtSec:397, csat:77.8, iqs:96.3,  dsat:0 },
+      { week:"W14", tph:4.43, ahtSec:432, csat:92.3, iqs:95.0,  dsat:0 },
+      { week:"W15", tph:5.27, ahtSec:395, csat:72.2, iqs:98.3,  dsat:0 },
+      { week:"W16", tph:5.30, ahtSec:441, csat:80.0, iqs:95.7,  dsat:0 },
+      { week:"W17", tph:4.93, ahtSec:352, csat:90.0, iqs:86.7,  dsat:0 },
+    ],
+    monthly: [
+      { month:"Jan", tph:5.83, ahtSec:337, csat:80.5, iqs:96.8  },
+      { month:"Feb", tph:5.06, ahtSec:429, csat:85.5, iqs:92.6  },
+      { month:"Mar", tph:5.50, ahtSec:364, csat:79.7, iqs:94.4  },
+      { month:"Apr", tph:5.01, ahtSec:400, csat:83.0, iqs:97.33 },
+    ],
+    iqs: [
+      { id:"1007011850", reviewer:"Yessica Nagib",       score:100, date:"2026-04-29" },
+      { id:"1007010005", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-29" },
+      { id:"1007006831", reviewer:"Cecilia Gabet",       score:100, date:"2026-04-29" },
+      { id:"1006978235", reviewer:"Cecilia Gabet",       score:100, date:"2026-04-28" },
+      { id:"1006936640", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-27" },
+      { id:"1006844284", reviewer:"Cecilia Gabet",       score:100, date:"2026-04-23" },
+      { id:"1006888028", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-24" },
+      { id:"1006893429", reviewer:"Valeria Leon",        score:100, date:"2026-04-24" },
+      { id:"1006813788", reviewer:"Maria Fernanda Lara", score:50,  date:"2026-04-22" },
+      { id:"1006810418", reviewer:"Yessica Nagib",       score:90,  date:"2026-04-22" },
+      { id:"1006852683", reviewer:"Maria Fernanda Lara", score:70,  date:"2026-04-23" },
+      { id:"1006811678", reviewer:"Johans Breidenbach",  score:70,  date:"2026-04-22" },
+      { id:"1006804873", reviewer:"Cecilia Gabet",       score:100, date:"2026-04-22" },
+      { id:"1006826926", reviewer:"Valeria Leon",        score:100, date:"2026-04-23" },
+      { id:"1006656636", reviewer:"Cecilia Gabet",       score:100, date:"2026-04-16" },
+      { id:"1006660758", reviewer:"Johans Breidenbach",  score:100, date:"2026-04-16" },
+      { id:"1006657763", reviewer:"Yessica Nagib",       score:100, date:"2026-04-16" },
+      { id:"1006657660", reviewer:"Yessica Nagib",       score:70,  date:"2026-04-16" },
+      { id:"1006620498", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-15" },
+      { id:"1006576361", reviewer:"Yessica Nagib",       score:90,  date:"2026-04-14" },
+      { id:"1006583562", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-14" },
+      { id:"1006582089", reviewer:"Johans Breidenbach",  score:100, date:"2026-04-14" },
+      { id:"1006356149", reviewer:"Yessica Nagib",       score:100, date:"2026-04-06" },
+      { id:"1006353882", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-06" },
+    ],
+    csat: [
+      { date:"2026-03-29", channel:"Email",      reason:"Order Management",    satisfaction:"Good", comment:"He was accommodating and just lovely!", ticketId:"2141378" },
+      { date:"2026-04-02", channel:"Messaging",  reason:"Account Management",  satisfaction:"Good", comment:"Ignacio was very professional, understanding and polite. He is a true asset to your company!", ticketId:"2165232" },
+      { date:"2026-04-04", channel:"Api",        reason:"Billing and Payments",satisfaction:"Good", comment:"Took awhile due to slow system but Ignacio was excellent.", ticketId:"2170873" },
+      { date:"2026-04-05", channel:"Api",        reason:"Order Management",    satisfaction:"Good", comment:"Ignacio was very attentive and knowledgeable during our exchange. He resolved my issue quickly with a welcoming demeanor.", ticketId:"2167454" },
+      { date:"2026-04-05", channel:"Email",      reason:"Account Management",  satisfaction:"Bad",  comment:"", ticketId:"2169932" },
+      { date:"2026-04-09", channel:"Api",        reason:"Meal Experience",     satisfaction:"Good", comment:"Very professional, offered me a fair resolution. Excellent straightforward customer care. Thanks!", ticketId:"2182798" },
+      { date:"2026-04-10", channel:"Web",        reason:"Account Management",  satisfaction:"Bad",  comment:"I am still being compelled to use a service I did not request. I will dispute this charge directly with my credit card provider.", ticketId:"2186166" },
+      { date:"2026-04-13", channel:"Email",      reason:"Account Management",  satisfaction:"Good", comment:"Very supportive and understanding of our financial limitations and offered a lower cost solution.", ticketId:"2185979" },
+      { date:"2026-04-15", channel:"Messaging",  reason:"Account Management",  satisfaction:"Good", comment:"Ignacio was very helpful, provided me options, explained everything thoroughly and ultimately resolved my issue. Perfect customer service!", ticketId:"2204700" },
+      { date:"2026-04-16", channel:"Email",      reason:"Account Management",  satisfaction:"Good", comment:"Ignatio was very helpful, polite and courteous. Thank you.", ticketId:"2198974" },
+      { date:"2026-04-17", channel:"Api",        reason:"Account Management",  satisfaction:"Good", comment:"He is an asset to your company.", ticketId:"2208505" },
+      { date:"2026-04-17", channel:"Email",      reason:"Order Management",    satisfaction:"Good", comment:"Good answers. Patient.", ticketId:"2206920" },
+      { date:"2026-04-19", channel:"Email",      reason:"Account Management",  satisfaction:"Good", comment:"Great product and company and support. I REALLY REALLY love the meals!!! Especially the shrimp pasta and the blackened pasta meals combo... absolutely amazing!!!", ticketId:"2206007" },
+      { date:"2026-04-21", channel:"Email",      reason:"Account Management",  satisfaction:"Good", comment:"Ignacio was so helpful, offered helpful solutions and made me feel heard. He deserves a raise, honestly!", ticketId:"2206930" },
+      { date:"2026-04-23", channel:"Messaging",  reason:"Account Management",  satisfaction:"Bad",  comment:"Ignacio is passive aggressive. The staff is kind of poorly trained. The company has bad practices.", ticketId:"2232561" },
+      { date:"2026-04-23", channel:"Messaging",  reason:"Delivery Experience", satisfaction:"Good", comment:"He handled things quickly and efficiently, which was appreciated.", ticketId:"2232512" },
+      { date:"2026-04-29", channel:"Email",      reason:"Account Management",  satisfaction:"Good", comment:"Very fast follow-up and courteous. Am in the midst of life transitions so a pleasure to respond to a 'kind soul'!", ticketId:"2250284" },
+    ],
+    dsat: [],
+    notes: "",
+  },
+
+  // Matias Tamariz
+  mt: {
+    weekly: [
+      { week:"W2",  tph:4.46, ahtSec:813, csat:66.7,  iqs:85.0,  dsat:1 },
+      { week:"W3",  tph:4.08, ahtSec:913, csat:86.4,  iqs:87.50, dsat:1 },
+      { week:"W4",  tph:4.69, ahtSec:781, csat:88.9,  iqs:85.71, dsat:0 },
+      { week:"W5",  tph:4.64, ahtSec:783, csat:66.7,  iqs:94.44, dsat:0 },
+      { week:"W6",  tph:4.80, ahtSec:752, csat:84.2,  iqs:96.67, dsat:0 },
+      { week:"W7",  tph:4.70, ahtSec:767, csat:85.7,  iqs:90.0,  dsat:0 },
+      { week:"W8",  tph:4.91, ahtSec:741, csat:73.7,  iqs:100.0, dsat:0 },
+      { week:"W9",  tph:4.94, ahtSec:732, csat:79.0,  iqs:76.25, dsat:0 },
+      { week:"W10", tph:4.22, ahtSec:865, csat:80.0,  iqs:86.67, dsat:0 },
+      { week:"W11", tph:5.27, ahtSec:693, csat:71.4,  iqs:84.29, dsat:0 },
+      { week:"W12", tph:4.64, ahtSec:799, csat:83.3,  iqs:100.0, dsat:1 },
+      { week:"W13", tph:4.47, ahtSec:815, csat:87.5,  iqs:95.71, dsat:0 },
+      { week:"W14", tph:4.55, ahtSec:795, csat:60.0,  iqs:90.0,  dsat:0 },
+      { week:"W15", tph:3.94, ahtSec:946, csat:72.73, iqs:88.0,  dsat:0 },
+      { week:"W16", tph:4.05, ahtSec:885, csat:85.0,  iqs:100.0, dsat:0 },
+      { week:"W17", tph:3.86, ahtSec:934, csat:91.7,  iqs:87.50, dsat:0 },
+    ],
+    monthly: [
+      { month:"Jan", tph:4.42, ahtSec:842, csat:78.8, iqs:88.93 },
+      { month:"Feb", tph:4.84, ahtSec:748, csat:80.3, iqs:90.34 },
+      { month:"Mar", tph:4.63, ahtSec:791, csat:79.0, iqs:91.35 },
+    ],
+    iqs: [
+      { id:"1002573243", reviewer:"Johans Breidenbach",  score:100, date:"2025-11-25" },
+      { id:"1002608236", reviewer:"Yessica Nagib",       score:100, date:"2025-11-26" },
+      { id:"1002574165", reviewer:"Valeria Leon",        score:60,  date:"2025-11-25" },
+      { id:"1002563030", reviewer:"Cecilia Gabet",       score:100, date:"2025-11-25" },
+      { id:"1003750129", reviewer:"Johans Breidenbach",  score:70,  date:"2026-01-08" },
+      { id:"1003751849", reviewer:"Yessica Nagib",       score:70,  date:"2026-01-08" },
+      { id:"1003709342", reviewer:"Yessica Nagib",       score:100, date:"2026-01-07" },
+      { id:"1003719872", reviewer:"Cecilia Gabet",       score:100, date:"2026-01-07" },
+      { id:"1004424386", reviewer:"Valeria Leon",        score:100, date:"2026-01-30" },
+      { id:"1004376285", reviewer:"Cecilia Gabet",       score:50,  date:"2026-01-29" },
+      { id:"1004417524", reviewer:"Maria Fernanda Lara", score:100, date:"2026-01-30" },
+      { id:"1005047528", reviewer:"Johans Breidenbach",  score:100, date:"2026-02-20" },
+      { id:"1005009967", reviewer:"Yessica Nagib",       score:100, date:"2026-02-19" },
+      { id:"1005047174", reviewer:"Yessica Nagib",       score:100, date:"2026-02-20" },
+      { id:"1006661033", reviewer:"Johans Breidenbach",  score:100, date:"2026-04-16" },
+      { id:"1006658670", reviewer:"Valeria Leon",        score:100, date:"2026-04-16" },
+      { id:"1006657907", reviewer:"Yessica Nagib",       score:100, date:"2026-04-16" },
+      { id:"1006656972", reviewer:"Cecilia Gabet",       score:100, date:"2026-04-16" },
+    ],
+    csat: [
+      { date:"2025-12-31", channel:"Web",        reason:"Delivery Experience",  satisfaction:"Good", comment:"Mathias was very thorough in his response and very clear. He did everything I hoped he would do to resolve the issue.", ticketId:"1743463" },
+      { date:"2026-01-03", channel:"Email",      reason:"Billing and Payments", satisfaction:"Good", comment:"Matias crushed it! Thanks!", ticketId:"1755193" },
+      { date:"2026-01-07", channel:"Messaging",  reason:"Order Management",     satisfaction:"Good", comment:"Matias worked hard even though the end result was disappointing and I have cancelled my subscription.", ticketId:"1766145" },
+      { date:"2026-01-13", channel:"Email",      reason:"Meal Experience",      satisfaction:"Good", comment:"Matias acted swiftly and was kind enough to extend my discount, without having to even ask. I appreciate that he was thoughtful and forward thinking.", ticketId:"1785594" },
+      { date:"2026-01-14", channel:"Email",      reason:"Billing and Payments", satisfaction:"Good", comment:"Matteas' response was very thorough and kind. I definitely felt supported and was very grateful that he was able to restore the discount offer.", ticketId:"1783696" },
+      { date:"2026-01-16", channel:"Web",        reason:"Order Management",     satisfaction:"Good", comment:"Matias and your customer support team in general are always very helpful and a refreshing change from most service agents I have to deal with.", ticketId:"1795344" },
+      { date:"2026-01-22", channel:"Messaging",  reason:"Billing and Payments", satisfaction:"Good", comment:"Matias was very polite and took care of my issue. I truly appreciate the great support!", ticketId:"1816058" },
+      { date:"2026-01-28", channel:"Api",        reason:"Delivery Experience",  satisfaction:"Good", comment:"Thank heavens Matias came to the rescue. Thanks to Matias, I am back on track with my delivery schedule.", ticketId:"1842121" },
+      { date:"2026-02-06", channel:"Email",      reason:"Order Management",     satisfaction:"Good", comment:"Matias was very thorough in his responses. If he is any indication of the kind of services you supply, we will have a happy and yummy relationship.", ticketId:"1897915" },
+      { date:"2026-02-17", channel:"Email",      reason:"Meal Experience",      satisfaction:"Good", comment:"Matias was incredibly helpful and gave a very thorough answer. It encompassed answers to all the questions I had before I even needed to voice them.", ticketId:"1929456" },
+      { date:"2026-02-20", channel:"Messaging",  reason:"Billing and Payments", satisfaction:"Bad",  comment:"The chat was over an hour and a half. Amazon resolves issues in less than 5 min. Your customer service is horrible!", ticketId:"1957271" },
+      { date:"2026-02-21", channel:"Messaging",  reason:"Account Management",   satisfaction:"Bad",  comment:"Bad service didn't solve the issue but made it worse.", ticketId:"1959784" },
+      { date:"2026-04-03", channel:"Api",        reason:"Meal Experience",      satisfaction:"Good", comment:"Matias' response was timely and appropriate. He explained his findings and expressed his concern for my inconvenience.", ticketId:"2163306" },
+      { date:"2026-04-03", channel:"Twilio SMS", reason:"Account Management",   satisfaction:"Good", comment:"Matias was very helpful and considerate. He went above and beyond to help me and I really appreciate the great customer service.", ticketId:"2167851" },
+      { date:"2026-04-05", channel:"Messaging",  reason:"Billing and Payments", satisfaction:"Good", comment:"The support was above and beyond my greatest expectation — Matias is amazing.", ticketId:"2156163" },
+    ],
+    dsat: [
+      { week:"W2",  ticketId:"1765040", summary:"Customer asked about a missing payment. Response was overly long and unclear, leaving the issue unresolved and requiring further follow-up.", coaching:"You made a good effort to explain the situation, which shows ownership. Focus on simplifying your responses — especially in billing cases where clarity is key. Lead with a direct answer first, then add only necessary context. Before sending, ask yourself: 'Would this be easy to understand in one read?'" },
+      { week:"W3",  ticketId:"1798448", summary:"Customer experienced login issues across devices. Agent followed up but didn't fully validate or investigate the issue, leading to back-and-forth and no resolution.", coaching:"It's great that you stayed engaged with the customer. Lean more into proactive validation — especially when there are clear troubleshooting paths available. Taking an extra step, like impersonating or checking account signals, can help you get ahead of the issue and reduce friction." },
+      { week:"W12", ticketId:"2102486", summary:"Customer reported an undelivered order. Agent's response was delayed due to handling multiple conversations, and the customer didn't receive a clear resolution.", coaching:"You were handling multiple priorities, which can be challenging. In these moments, setting expectations early is key — especially if you need to step away or switch channels. Letting the customer know you'll follow up via email can prevent unnecessary waiting and maintain trust." },
+    ],
+    notes: "",
+  },
+
+  // Kaori Nakashima Tarazona
+  kn: {
+    weekly: [
+      { week:"W2",  tph:3.21, ahtSec:591, csat:78.3,  iqs:95.0,  dsat:0 },
+      { week:"W3",  tph:3.97, ahtSec:446, csat:84.0,  iqs:90.0,  dsat:1 },
+      { week:"W4",  tph:3.60, ahtSec:558, csat:73.7,  iqs:100.0, dsat:0 },
+      { week:"W5",  tph:4.74, ahtSec:442, csat:76.0,  iqs:98.9,  dsat:1 },
+      { week:"W6",  tph:3.39, ahtSec:476, csat:75.0,  iqs:100.0, dsat:1 },
+      { week:"W7",  tph:3.65, ahtSec:607, csat:50.0,  iqs:95.0,  dsat:0 },
+      { week:"W8",  tph:4.38, ahtSec:739, csat:85.0,  iqs:100.0, dsat:0 },
+      { week:"W9",  tph:4.52, ahtSec:434, csat:75.0,  iqs:96.3,  dsat:2 },
+      { week:"W10", tph:4.28, ahtSec:466, csat:94.4,  iqs:93.8,  dsat:1 },
+      { week:"W11", tph:4.10, ahtSec:534, csat:70.6,  iqs:91.4,  dsat:0 },
+      { week:"W12", tph:4.87, ahtSec:364, csat:78.3,  iqs:98.9,  dsat:0 },
+      { week:"W13", tph:4.53, ahtSec:387, csat:83.3,  iqs:100.0, dsat:0 },
+      { week:"W14", tph:4.33, ahtSec:415, csat:80.0,  iqs:100.0, dsat:1 },
+      { week:"W15", tph:4.41, ahtSec:483, csat:93.3,  iqs:98.3,  dsat:0 },
+      { week:"W16", tph:4.05, ahtSec:433, csat:78.6,  iqs:100.0, dsat:0 },
+      { week:"W17", tph:3.95, ahtSec:542, csat:100.0, iqs:null,  dsat:0 },
+    ],
+    monthly: [
+      { month:"Jan", tph:3.80, ahtSec:512, csat:79.6,  iqs:96.3  },
+      { month:"Feb", tph:3.98, ahtSec:559, csat:74.1,  iqs:96.7  },
+      { month:"Mar", tph:4.44, ahtSec:428, csat:82.6,  iqs:96.8  },
+      { month:"Apr", tph:4.22, ahtSec:464, csat:84.8,  iqs:97.33 },
+    ],
+    iqs: [
+      { id:"1006659970", reviewer:"Yessica Nagib",       score:100, date:"2026-04-16" },
+      { id:"1006697389", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-17" },
+      { id:"1006621670", reviewer:"Valeria Leon",        score:100, date:"2026-04-15" },
+      { id:"1006618976", reviewer:"Yessica Nagib",       score:100, date:"2026-04-15" },
+      { id:"1006659832", reviewer:"Yessica Nagib",       score:100, date:"2026-04-16" },
+      { id:"1006618617", reviewer:"Johans Breidenbach",  score:100, date:"2026-04-15" },
+      { id:"1006359017", reviewer:"Johans Breidenbach",  score:100, date:"2026-04-06" },
+      { id:"1006395548", reviewer:"Johans Breidenbach",  score:100, date:"2026-04-07" },
+      { id:"1006357921", reviewer:"Yessica Nagib",       score:100, date:"2026-04-06" },
+      { id:"1006345376", reviewer:"Cecilia Gabet",       score:90,  date:"2026-04-06" },
+      { id:"1006389229", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-07" },
+      { id:"1006358602", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-06" },
+      { id:"1006212721", reviewer:"Valeria Leon",        score:100, date:"2026-03-31" },
+      { id:"1006352530", reviewer:"Maria Fernanda Lara", score:100, date:"2026-04-06" },
+      { id:"1006173929", reviewer:"Johans Breidenbach",  score:100, date:"2026-03-30" },
+      { id:"1006175855", reviewer:"Maria Fernanda Lara", score:100, date:"2026-03-30" },
+      { id:"1006183871", reviewer:"Valeria Leon",        score:100, date:"2026-03-31" },
+      { id:"1006211710", reviewer:"Maria Fernanda Lara", score:100, date:"2026-03-31" },
+    ],
+    csat: [
+      { date:"2026-03-29", channel:"Email",      reason:"Billing and Payments", satisfaction:"Good", comment:"Nana did a great job of clarifying what credits were referred to.", ticketId:"2149038" },
+      { date:"2026-03-29", channel:"Messaging",  reason:"Account Management",   satisfaction:"Good", comment:"Speaking to the human was wonderful and resolved the issue immediately. The Chatbot in between was highly annoying. She was absolutely wonderful.", ticketId:"2148836" },
+      { date:"2026-03-30", channel:"Web",        reason:"Account Management",   satisfaction:"Good", comment:"She was just great", ticketId:"2147944" },
+      { date:"2026-03-31", channel:"Api",        reason:"Billing and Payments", satisfaction:"Good", comment:"Professional, helpful and knowledgeable.", ticketId:"2154805" },
+      { date:"2026-03-31", channel:"Email",      reason:"Delivery Experience",  satisfaction:"Bad",  comment:"", ticketId:"2149096" },
+      { date:"2026-04-01", channel:"Api",        reason:"Delivery Experience",  satisfaction:"Good", comment:"Professional, efficient!!!", ticketId:"2159722" },
+      { date:"2026-04-02", channel:"Email",      reason:"Delivery Experience",  satisfaction:"Bad",  comment:"Didn't provide me with the information I needed to escalate the delivery problem.", ticketId:"2156457" },
+      { date:"2026-04-02", channel:"Web",        reason:"Billing and Payments", satisfaction:"Good", comment:"Very quick response. Super helpful instructions and insights.", ticketId:"2164214" },
+      { date:"2026-04-04", channel:"Messaging",  reason:"Order Management",     satisfaction:"Bad",  comment:"I was never connected to an agent after 30 minutes of waiting.", ticketId:"2169845" },
+      { date:"2026-04-08", channel:"Messaging",  reason:"Order Management",     satisfaction:"Good", comment:"Nana was great, really appreciated her quick assistance!", ticketId:"2182663" },
+      { date:"2026-04-14", channel:"Api",        reason:"Order Management",     satisfaction:"Bad",  comment:"It happened again. I choose different meals and confirmed it all thoroughly. But for some reason your system reverted back to the default selections.", ticketId:"2180012" },
+      { date:"2026-04-15", channel:"Twilio SMS", reason:"Account Management",   satisfaction:"Good", comment:"The agent stayed with me while we worked through the issue. They were very professional and I will be back.", ticketId:"2202082" },
+      { date:"2026-04-17", channel:"Api",        reason:"Order Management",     satisfaction:"Bad",  comment:"If there is a problem with the UI and a customer is not informed that their changes were effected, a notice should be given and a refund issued.", ticketId:"2204990" },
+      { date:"2026-04-18", channel:"Email",      reason:"Billing and Payments", satisfaction:"Good", comment:"Nana was very helpful and very quick to solve my issue!! Idk how much you all pay her, but please give her a raise anyway!! 🥰", ticketId:"2212055" },
+      { date:"2026-04-19", channel:"Messaging",  reason:"Delivery Experience",  satisfaction:"Good", comment:"Very friendly and answered all my questions. Much appreciated.", ticketId:"2216160" },
+    ],
+    dsat: [
+      { week:"W3",  ticketId:"1787950", summary:"Customer had trouble canceling and reached out for help. Plan was canceled, but tone came across as slightly dismissive and the customer left feeling uneasy.", coaching:"You successfully completed the cancellation, which is great. For situations where customers are already frustrated, tone becomes just as important as the resolution. Try to slow down and create a bit more space for the customer to express themselves — acknowledging frustration explicitly can go a long way. Small shifts like 'I can see how frustrating that must have been' can soften the interaction and build trust." },
+      { week:"W5",  ticketId:"1871079", summary:"Customer was incorrectly charged due to a previous agent error. Kaori validated, submitted Wabi, and issued a refund, but communication could have been more streamlined.", coaching:"You did a great job correcting a previous mistake and ensuring the refund was processed — that's strong ownership. To refine your approach, aim to consolidate communication whenever possible. Delivering the resolution in a single, clear message helps reduce friction and builds confidence, especially after a poor prior experience." },
+      { week:"W9",  ticketId:"2017054", summary:"Customer couldn't access their cart to update preferences. Agent explained steps but didn't investigate the root issue, leading to no resolution.", coaching:"You provided guidance, which is helpful. To take it further, try to dig deeper when customers can't follow standard steps. Asking for screenshots or videos can give you valuable context and help you troubleshoot more effectively, showing stronger ownership of the issue." },
+      { week:"W10", ticketId:"2063881", summary:"Customer was charged after attempting to cancel and had to contact support multiple times. Policy was followed, but the experience felt rigid and frustrating.", coaching:"You did well adhering to policy and offering alternatives like meal changes. In high-frustration cases, empathy and ownership become even more important. Acknowledge the inconvenience more explicitly and, when possible, explore goodwill gestures or escalate edge cases to improve the experience." },
+      { week:"W14", ticketId:"2156457", summary:"Customer had a delivery issue and felt frustrated by repetitive, generic responses that didn't provide clear next steps.", coaching:"You stayed engaged, which is great. To improve the experience, focus on making your responses more concise and personalized. Avoid repetition and tailor each message to move the conversation forward, adding a bit more personality and clarity." },
+    ],
+    notes: "",
+  },
+};
+
+// ── localStorage ──────────────────────────────────────────────────────────────
+const STORAGE_KEY = "tpd_v10";
+const loadStore = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch { return {}; } };
+const saveStore = (s) => localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+const getAgentData = (store, id) => store[id] || REAL_DATA[id] || { weekly:[], monthly:[], iqs:[], csat:[], dsat:[], notes:"" };
+
+// ── UI atoms ──────────────────────────────────────────────────────────────────
+const Stars = ({ score }) => {
+  const full = Math.round((score / 100) * 5);
+  return <span style={{ color: C.amber, fontSize: 14, letterSpacing: 1 }}>{"★".repeat(full)}{"☆".repeat(5-full)}<span style={{ color: C.gray400, fontSize: 12, marginLeft: 6 }}>{score}%</span></span>;
+};
+const Badge = ({ label, type="neutral" }) => {
+  const m = { good:{bg:C.greenLight,color:C.green}, bad:{bg:C.redLight,color:C.red}, neutral:{bg:C.gray50,color:C.gray600}, info:{bg:C.blueLight,color:C.blueDark} };
+  const s = m[type]||m.neutral;
+  return <span style={{ background:s.bg, color:s.color, fontSize:11, fontWeight:500, padding:"2px 8px", borderRadius:20, whiteSpace:"nowrap" }}>{label}</span>;
+};
+const KPIDelta = ({ value }) => {
+  if (value === null || value === undefined) return null;
+  const up = value >= 0;
+  return <span style={{ fontSize:12, fontWeight:500, color:up?C.green:C.red }}>{up?"▲":"▼"} {Math.abs(value).toFixed(1)}%</span>;
+};
+const exportCSV = (rows, filename) => {
+  if (!rows?.length) return;
+  const keys = Object.keys(rows[0]);
+  const csv = [keys.join(","), ...rows.map(r => keys.map(k => `"${r[k]??""}"` ).join(","))].join("\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download = filename; a.click();
+};
+const KPICard = ({ label, value, unit="", delta, icon, metTarget, target, dm }) => {
+  const color = value == null ? (dm?"#fff":C.gray900) : metTarget ? C.teal : C.coral;
+  return (
+    <div style={{ background:dm?"#1E2535":"#fff", border:`0.5px solid ${dm?"#2A3A4A":C.gray100}`, borderRadius:14, padding:"18px 20px", display:"flex", flexDirection:"column", gap:6, boxShadow:dm?"none":"0 1px 4px rgba(0,0,0,.06)", flex:"1 1 155px", minWidth:145 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <span style={{ fontSize:12, color:dm?"#888":C.gray400, fontWeight:500, letterSpacing:.4 }}>{label}</span>
+        <span style={{ fontSize:18 }}>{icon}</span>
+      </div>
+      <div style={{ fontSize:30, fontWeight:700, color, lineHeight:1.1 }}>
+        {value !== null && value !== undefined ? `${value}${unit}` : "—"}
+      </div>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:4 }}>
+        {delta !== null && delta !== undefined ? <KPIDelta value={delta} /> : <span style={{ fontSize:12, color:dm?"#555":C.gray200 }}>—</span>}
+        {target && <span style={{ fontSize:10, color:dm?"#555":C.gray200, whiteSpace:"nowrap" }}>target: {target}</span>}
+      </div>
+    </div>
+  );
+};
+const SectionHeader = ({ title, dm, action }) => (
+  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+    <h3 style={{ margin:0, fontSize:15, fontWeight:600, color:dm?"#ddd":C.gray800 }}>{title}</h3>
+    {action}
+  </div>
+);
+const TW = ({ children, dm }) => (
+  <div style={{ overflowX:"auto", borderRadius:10, border:`0.5px solid ${dm?"#2A3A4A":C.gray100}` }}>
+    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>{children}</table>
+  </div>
+);
+const Th = ({ children, dm }) => <th style={{ padding:"10px 14px", textAlign:"left", fontWeight:600, fontSize:11, color:dm?"#888":C.gray400, letterSpacing:.6, whiteSpace:"nowrap", background:dm?"#161D2A":C.gray50, borderBottom:`0.5px solid ${dm?"#2A3A4A":C.gray100}` }}>{children}</th>;
+const Td = ({ children, dm }) => <td style={{ padding:"10px 14px", color:dm?"#ccc":C.gray800, borderBottom:`0.5px solid ${dm?"#1E2535":C.gray50}`, whiteSpace:"nowrap" }}>{children}</td>;
+const cs = (dm) => ({ background:dm?"#1E2535":"#fff", border:`0.5px solid ${dm?"#2A3A4A":C.gray100}`, borderRadius:14, padding:"18px 16px", boxShadow:dm?"none":"0 1px 4px rgba(0,0,0,.04)" });
+
+const ManualForm = ({ type, onAdd, dm, onClose }) => {
+  const [form, setForm] = useState(type==="weekly"?{week:"",tph:"",aht:"",csat:"",iqs:"",dsat:""}:{month:"",tph:"",aht:"",csat:"",iqs:""});
+  const fields = type==="weekly"?[["week","Week (e.g. W17)","text"],["tph","TPH","number"],["aht","AHT (min)","number"],["csat","CSAT %","number"],["iqs","IQS %","number"],["dsat","DSAT Count","number"]]:[["month","Month","text"],["tph","TPH","number"],["aht","AHT (min)","number"],["csat","CSAT %","number"],["iqs","IQS %","number"]];
+  const inp = { width:"100%", padding:"8px 10px", borderRadius:8, fontSize:13, boxSizing:"border-box", border:`0.5px solid ${dm?"#3A4A5A":C.gray100}`, background:dm?"#0D1521":"#fff", color:dm?"#ddd":C.gray900 };
+  return (
+    <div style={{ background:dm?"#1E2535":"#fff", borderRadius:12, padding:20, border:`0.5px solid ${dm?"#2A3A4A":C.gray100}`, marginBottom:16 }}>
+      <div style={{ fontWeight:600, fontSize:14, marginBottom:14, color:dm?"#ddd":C.gray800 }}>Add {type==="weekly"?"Weekly":"Monthly"} Row</div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(130px,1fr))", gap:10 }}>
+        {fields.map(([k,label,t]) => (
+          <div key={k}><label style={{ fontSize:11, color:dm?"#888":C.gray400, display:"block", marginBottom:4 }}>{label}</label><input type={t} value={form[k]} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))} style={inp} /></div>
+        ))}
+      </div>
+      <div style={{ display:"flex", gap:8, marginTop:14 }}>
+        <button onClick={()=>{onAdd(Object.fromEntries(Object.entries(form).map(([k,v])=>[k,isNaN(v)||v===""?v:parseFloat(v)]))); onClose();}} style={{ padding:"8px 16px", borderRadius:8, border:"none", cursor:"pointer", background:C.blue, color:"#fff", fontWeight:600, fontSize:13 }}>Add Row</button>
+        <button onClick={onClose} style={{ padding:"8px 16px", borderRadius:8, cursor:"pointer", border:`0.5px solid ${dm?"#3A4A5A":C.gray100}`, background:"transparent", color:dm?"#aaa":C.gray600, fontSize:13 }}>Cancel</button>
+      </div>
+    </div>
+  );
+};
+
+const CSVUpload = ({ label, onParsed, dm }) => {
+  const ref = useRef();
+  return <>
+    <input type="file" accept=".csv" ref={ref} onChange={e=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=ev=>onParsed(parseCSV(ev.target.result)); r.readAsText(f); e.target.value=""; }} style={{ display:"none" }} />
+    <button onClick={()=>ref.current.click()} style={{ padding:"6px 12px", borderRadius:8, fontSize:12, cursor:"pointer", border:`0.5px solid ${dm?"#3A4A5A":C.gray200}`, background:dm?"#1E2535":"#fff", color:dm?"#aaa":C.gray600, display:"flex", alignItems:"center", gap:6 }}>↑ {label}</button>
+  </>;
+};
+
+// ── Team Metrics seed data (from "Dani's team" > Team Metrics tab) ───────────
+const TEAM_WEEKLY = [
+  { week:"W1",  tph:null, ahtSec:null, csat:79.01, iqs:null  },
+  { week:"W2",  tph:4.43, ahtSec:652,  csat:72.82, iqs:84.40 },
+  { week:"W3",  tph:5.13, ahtSec:598,  csat:90.67, iqs:86.51 },
+  { week:"W4",  tph:5.79, ahtSec:594,  csat:77.10, iqs:90.36 },
+  { week:"W5",  tph:5.18, ahtSec:626,  csat:77.84, iqs:96.77 },
+  { week:"W6",  tph:5.03, ahtSec:598,  csat:82.86, iqs:89.87 },
+  { week:"W7",  tph:4.70, ahtSec:557,  csat:83.59, iqs:86.91 },
+  { week:"W8",  tph:4.98, ahtSec:554,  csat:75.14, iqs:92.14 },
+  { week:"W9",  tph:4.90, ahtSec:573,  csat:81.76, iqs:90.62 },
+  { week:"W10", tph:4.75, ahtSec:544,  csat:81.46, iqs:89.88 },
+  { week:"W11", tph:4.71, ahtSec:514,  csat:77.27, iqs:88.71 },
+  { week:"W12", tph:4.67, ahtSec:543,  csat:72.46, iqs:95.69 },
+  { week:"W13", tph:4.91, ahtSec:467,  csat:79.29, iqs:95.09 },
+  { week:"W14", tph:4.72, ahtSec:542,  csat:72.95, iqs:94.17 },
+  { week:"W15", tph:4.54, ahtSec:537,  csat:72.88, iqs:92.10 },
+  { week:"W16", tph:4.52, ahtSec:479,  csat:78.95, iqs:94.60 },
+  { week:"W17", tph:4.55, ahtSec:602,  csat:84.16, iqs:92.10 },
+  { week:"W18", tph:4.46, ahtSec:695,  csat:73.47, iqs:null  },
+];
+const TEAM_MONTHLY = [
+  { month:"Jan", tph:5.04, ahtSec:589, csat:80.20, iqs:89.51 },
+  { month:"Feb", tph:4.91, ahtSec:518, csat:80.75, iqs:89.88 },
+  { month:"Mar", tph:4.76, ahtSec:557, csat:77.29, iqs:89.30 },
+  { month:"Apr", tph:4.56, ahtSec:612, csat:77.22, iqs:null  },
+];
+
+// ── App ───────────────────────────────────────────────────────────────────────
+function App() {
+  const [dm, setDm] = useState(false);
+  const [agents] = useState(SEED_AGENTS);
+  const [sel, setSel] = useState("ym");
+  const [store, setStore] = useState(loadStore);
+  const [tab, setTab] = useState("overview");
+  const [chFilter, setChFilter] = useState("All");
+  const [reFilter, setReFilter] = useState("All");
+  const [search, setSearch] = useState("");
+  const [showWF, setShowWF] = useState(false);
+  const [showMF, setShowMF] = useState(false);
+  const [sideOpen, setSideOpen] = useState(true);
+  const [syncSt, setSyncSt] = useState({});
+  const [teamWeekly, setTeamWeekly] = useState(TEAM_WEEKLY);
+  const [teamMonthly, setTeamMonthly] = useState(TEAM_MONTHLY);
+  const [authed, setAuthed] = useState(()=>!!localStorage.getItem("tpd_auth"));
+  const [lf, setLf] = useState({user:"",pass:""});
+  const [lerr, setLerr] = useState("");
+
+  const ad = getAgentData(store, sel === "team" ? "ym" : sel); // fallback so hooks don't crash
+  const curAgent = agents.find(a=>a.id===sel) ?? null;
+
+  const setAD = useCallback((key, upd) => {
+    setStore(prev => {
+      const cur = getAgentData(prev, sel);
+      const next = { ...cur, [key]: typeof upd==="function" ? upd(cur[key]) : upd };
+      const ns = { ...prev, [sel]: next }; saveStore(ns); return ns;
+    });
+  }, [sel]);
+
+  // ── Sheet sync — fetches 3 tabs in parallel ────────────────────────────────
+  const syncAgent = useCallback(async (agent) => {
+    if (!agent?.id) return;
+    if (!agent?.sheetId) { setSyncSt(p=>({...p,[agent.id]:"no-sheet"})); return; }
+    setSyncSt(p=>({...p,[agent.id]:"loading"}));
+    try {
+      // Fetch all 3 tabs in parallel using the gviz/tq CSV endpoint (CORS-safe, no API key)
+      const [metricsCsv, iqsCsv, csatCsv] = await Promise.allSettled([
+        fetchSheetTab(agent.sheetId, SHEET_TABS.metrics),
+        fetchSheetTab(agent.sheetId, SHEET_TABS.iqs),
+        fetchSheetTab(agent.sheetId, SHEET_TABS.csat),
+      ]);
+
+      const { weekly, monthly } = metricsCsv.status === "fulfilled"
+        ? parseMetricsTab(metricsCsv.value) : { weekly: [], monthly: [] };
+      const iqs  = iqsCsv.status  === "fulfilled" ? parseIQSTab(iqsCsv.value)   : [];
+      const csat = csatCsv.status === "fulfilled" ? parseCSATTab(csatCsv.value) : [];
+
+      setStore(prev => {
+        const cur = getAgentData(prev, agent.id);
+        const merged = {
+          ...cur,
+          weekly:  weekly.length  ? weekly  : cur.weekly,
+          monthly: monthly.length ? monthly : cur.monthly,
+          iqs:     iqs.length     ? iqs     : cur.iqs,
+          csat:    csat.length    ? csat    : cur.csat,
+        };
+        const ns = { ...prev, [agent.id]: merged }; saveStore(ns); return ns;
+      });
+      setSyncSt(p=>({...p,[agent.id]:"ok"}));
+    } catch(e) {
+      console.warn("Sync failed:", agent.name, e.message);
+      setSyncSt(p=>({...p,[agent.id]:"error"}));
+    }
+  }, []);
+
+  // Sync selected agent whenever it changes (skip for team view)
+  useEffect(() => { if (authed && sel !== "team" && curAgent) syncAgent(curAgent); }, [sel, authed]);
+
+  // On first login, kick off background sync for all agents with sheets
+  useEffect(() => {
+    if (authed) {
+      SEED_AGENTS.filter(a => a.sheetId && a.id !== sel).forEach(a => syncAgent(a));
+    }
+  }, [authed]);
+
+  // ── Targets ────────────────────────────────────────────────────────────────
+  const TARGETS = { tph: 5, ahtSec: 720, csat: 80, iqs: 85 };
+
+  // AHT display: seconds → "Xm Ys" or "X min"
+  const fmtAHT = (sec) => {
+    if (sec == null) return null;
+    const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+    return s > 0 ? `${m}m ${s}s` : `${m} min`;
+  };
+
+  // ── KPI source: latest monthly row ─────────────────────────────────────────
+  const monthly = ad.monthly || [];
+  const lastM = monthly.filter(r => r.csat != null || r.tph != null).slice(-1)[0] || {};
+  const prevM = monthly.filter(r => r.csat != null || r.tph != null).slice(-2)[0] || {};
+  const csatDelta = lastM.csat != null && prevM.csat != null ? +(lastM.csat - prevM.csat).toFixed(1) : null;
+  const iqsDelta  = lastM.iqs  != null && prevM.iqs  != null ? +(lastM.iqs  - prevM.iqs ).toFixed(1) : null;
+  const tphDelta  = lastM.tph  != null && prevM.tph  != null ? +(lastM.tph  - prevM.tph ).toFixed(2) : null;
+  const ahtDelta  = lastM.ahtSec != null && prevM.ahtSec != null ? -(lastM.ahtSec - prevM.ahtSec) : null; // negative = improvement
+  const dsatCnt   = (ad.dsat || []).length;
+
+  const channels = ["All", ...new Set((ad.csat||[]).map(r=>r.channel).filter(Boolean))];
+  const reasons  = ["All", ...new Set((ad.csat||[]).map(r=>r.reason||"").filter(Boolean))];
+  const filtCSAT = (ad.csat||[]).filter(r => {
+    const ch=r.channel||"", re=r.reason||"", co=(r.comment||"").toLowerCase();
+    return (chFilter==="All"||ch===chFilter) && (reFilter==="All"||re===reFilter) && (!search||co.includes(search.toLowerCase())||re.toLowerCase().includes(search.toLowerCase()));
+  });
+
+  const bg=dm?"#0D1521":C.gray50, surf=dm?"#1E2535":"#fff", bord=dm?"#2A3A4A":C.gray100;
+  const tp=dm?"#E8EAF0":C.gray900, tm=dm?"#7A8A9A":C.gray400;
+  const synci = syncSt[sel];
+  const tabs=["overview","reviews","charts","notes"];
+  const tl={overview:"Overview",reviews:"Reviews",charts:"Trends",notes:"Notes"};
+
+  // ── Login ───────────────────────────────────────────────────────────────────
+  if (!authed) return (
+    <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:bg, fontFamily:"'DM Sans',system-ui,sans-serif" }}>
+      <div style={{ background:surf, borderRadius:16, padding:40, width:360, boxShadow:"0 4px 32px rgba(0,0,0,.12)", border:`0.5px solid ${bord}` }}>
+        <div style={{ textAlign:"center", marginBottom:28 }}>
+          <div style={{ fontSize:28, fontWeight:800, color:C.blue, letterSpacing:-1 }}>PulseDesk</div>
+          <div style={{ fontSize:13, color:tm, marginTop:4 }}>CookUnity · Team Performance</div>
+        </div>
+        {lerr && <div style={{ background:C.redLight, color:C.red, borderRadius:8, padding:"8px 12px", fontSize:13, marginBottom:14 }}>{lerr}</div>}
+        {[["user","Username","text"],["pass","Password","password"]].map(([k,label,t])=>(
+          <div key={k} style={{ marginBottom:14 }}>
+            <label style={{ fontSize:12, color:tm, display:"block", marginBottom:4 }}>{label}</label>
+            <input type={t} value={lf[k]} onChange={e=>setLf(p=>({...p,[k]:e.target.value}))}
+              onKeyDown={e=>e.key==="Enter"&&lf.user==="admin"&&lf.pass==="admin"&&(localStorage.setItem("tpd_auth","1"),setAuthed(true))}
+              style={{ width:"100%", padding:"10px 12px", borderRadius:9, fontSize:14, boxSizing:"border-box", border:`0.5px solid ${bord}`, background:dm?"#0D1521":"#fff", color:tp }} />
+          </div>
+        ))}
+        <button onClick={()=>{ if(lf.user==="admin"&&lf.pass==="admin"){localStorage.setItem("tpd_auth","1");setAuthed(true);}else setLerr("Use admin / admin to sign in"); }} style={{ width:"100%", padding:"11px 0", borderRadius:10, border:"none", cursor:"pointer", background:C.blue, color:"#fff", fontWeight:700, fontSize:14 }}>Sign In</button>
+        <div style={{ textAlign:"center", fontSize:12, color:tm, marginTop:14 }}>Credentials: <strong>admin</strong> / <strong>admin</strong></div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ display:"flex", minHeight:"100vh", background:bg, fontFamily:"'DM Sans',system-ui,sans-serif", color:tp }}>
+
+      {/* Sidebar */}
+      <aside style={{ width:sideOpen?224:64, flexShrink:0, transition:"width .2s", background:dm?"#0A1018":"#fff", borderRight:`0.5px solid ${bord}`, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+        <div style={{ padding:"16px 14px", borderBottom:`0.5px solid ${bord}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          {sideOpen&&<span style={{ fontWeight:800, fontSize:16, color:C.blue, letterSpacing:-0.5 }}>PulseDesk</span>}
+          <button onClick={()=>setSideOpen(p=>!p)} style={{ width:30,height:30,border:"none",background:"transparent",cursor:"pointer",color:tm,fontSize:16,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:6 }}>☰</button>
+        </div>
+        <div style={{ flex:1, overflowY:"auto", padding:"10px 8px" }}>
+          {sideOpen&&<div style={{ fontSize:10,color:tm,letterSpacing:1,fontWeight:600,marginBottom:8,paddingLeft:6 }}>TEAM</div>}
+          {agents.map(a=>{
+            const st=syncSt[a.id]; const dot=st==="loading"?"⟳":st==="ok"?"●":st==="error"?"!":"";
+            const dc=st==="ok"?C.teal:st==="error"?C.coral:st==="loading"?C.amber:"transparent";
+            return sideOpen?(
+              <button key={a.id} onClick={()=>setSel(a.id)} style={{ display:"flex",alignItems:"center",gap:10,width:"100%",padding:"10px 14px",border:"none",borderRadius:10,cursor:"pointer",background:a.id===sel?(dm?"#2A3F5A":C.blueLight):"transparent",borderLeft:`3px solid ${a.id===sel?C.blue:"transparent"}`,transition:"background .15s",textAlign:"left" }}>
+                <div style={{ width:34,height:34,borderRadius:"50%",flexShrink:0,background:a.id===sel?C.blue:(dm?"#3A4A5A":C.gray100),color:a.id===sel?"#fff":(dm?"#aaa":C.gray600),display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:600 }}>{a.avatar}</div>
+                <div style={{ flex:1,minWidth:0 }}>
+                  <div style={{ fontSize:13,fontWeight:500,color:dm?(a.id===sel?"#fff":"#ccc"):(a.id===sel?C.blueDark:C.gray800),whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis" }}>{a.name}</div>
+                  <div style={{ fontSize:10,color:dm?"#666":C.gray400 }}>{a.role}</div>
+                </div>
+                {dot&&<span style={{ fontSize:10,color:dc,flexShrink:0 }}>{dot}</span>}
+              </button>
+            ):(
+              <button key={a.id} title={a.name} onClick={()=>setSel(a.id)} style={{ width:40,height:40,borderRadius:"50%",border:`2px solid ${a.id===sel?C.blue:"transparent"}`,margin:"4px auto",display:"flex",alignItems:"center",justifyContent:"center",background:dm?"#2A3A4A":C.gray50,color:dm?"#ccc":C.gray600,fontSize:11,fontWeight:600,cursor:"pointer" }}>{a.avatar}</button>
+            );
+          })}
+          {/* Team Metrics entry */}
+          {sideOpen ? (
+            <button onClick={()=>setSel("team")} style={{ display:"flex",alignItems:"center",gap:10,width:"100%",padding:"10px 14px",border:"none",borderRadius:10,cursor:"pointer",background:sel==="team"?(dm?"#1A2E1A":C.greenLight):"transparent",borderLeft:`3px solid ${sel==="team"?C.green:"transparent"}`,transition:"background .15s",textAlign:"left",marginTop:6 }}>
+              <div style={{ width:34,height:34,borderRadius:10,flexShrink:0,background:sel==="team"?C.green:(dm?"#3A4A5A":C.gray100),color:sel==="team"?"#fff":(dm?"#aaa":C.gray600),display:"flex",alignItems:"center",justifyContent:"center",fontSize:14 }}>📊</div>
+              <div>
+                <div style={{ fontSize:13,fontWeight:600,color:sel==="team"?(dm?"#8fdc8f":C.green):(dm?"#ccc":C.gray800) }}>Team Metrics</div>
+                <div style={{ fontSize:10,color:dm?"#666":C.gray400 }}>WoW & MoM averages</div>
+              </div>
+            </button>
+          ) : (
+            <button title="Team Metrics" onClick={()=>setSel("team")} style={{ width:40,height:40,borderRadius:10,border:`2px solid ${sel==="team"?C.green:"transparent"}`,margin:"4px auto",display:"flex",alignItems:"center",justifyContent:"center",background:sel==="team"?C.greenLight:(dm?"#2A3A4A":C.gray50),fontSize:14,cursor:"pointer" }}>📊</button>
+          )}
+        </div>
+        <div style={{ padding:"12px 10px",borderTop:`0.5px solid ${bord}` }}>
+          <button onClick={()=>{localStorage.removeItem("tpd_auth");setAuthed(false);}} style={{ width:"100%",padding:"8px 0",borderRadius:8,border:`0.5px solid ${bord}`,background:"transparent",cursor:"pointer",color:tm,fontSize:12 }}>{sideOpen?"Sign Out":"↩"}</button>
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main style={{ flex:1,overflowY:"auto",display:"flex",flexDirection:"column" }}>
+        {/* Header */}
+        <div style={{ position:"sticky",top:0,zIndex:10,background:dm?"rgba(10,16,24,.95)":"rgba(255,255,255,.95)",backdropFilter:"blur(8px)",borderBottom:`0.5px solid ${bord}`,padding:"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap" }}>
+          <div style={{ display:"flex",alignItems:"center",gap:12 }}>
+            <div>
+              <div style={{ fontWeight:700,fontSize:16,color:tp }}>{sel==="team" ? "Team Metrics" : curAgent?.name}</div>
+              <div style={{ fontSize:12,color:tm,display:"flex",alignItems:"center",gap:6 }}>
+                {sel==="team" ? "Dani's Team · WoW & MoM averages" : curAgent?.role}
+                {sel!=="team"&&synci==="loading"&&<span style={{color:C.amber,fontSize:11}}>⟳ Syncing…</span>}
+                {sel!=="team"&&synci==="ok"     &&<span style={{color:C.teal, fontSize:11}}>● Live from Sheets</span>}
+                {sel!=="team"&&synci==="error"  &&<span style={{color:C.coral,fontSize:11}}>⚠ Sync failed — showing cached data</span>}
+                {sel!=="team"&&synci==="no-sheet"&&<span style={{color:tm,    fontSize:11}}>No sheet linked</span>}
+              </div>
+            </div>
+            {sel!=="team"&&curAgent?.sheetId&&<button onClick={()=>syncAgent(curAgent)} style={{ padding:"5px 10px",borderRadius:8,border:`0.5px solid ${bord}`,background:"transparent",cursor:"pointer",color:C.blue,fontSize:12 }}>↻ Refresh</button>}
+          </div>
+            <div style={{ display:"flex",gap:8,alignItems:"center",flexWrap:"wrap" }}>
+            {sel!=="team"&&(
+              <div style={{ display:"flex",gap:2,background:dm?"#161D2A":C.gray50,borderRadius:10,padding:3 }}>
+                {tabs.map(t=>(
+                  <button key={t} onClick={()=>setTab(t)} style={{ padding:"6px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,background:t===tab?(dm?"#2A3A4A":"#fff"):"transparent",color:t===tab?(dm?"#fff":C.blue):tm,fontWeight:t===tab?600:400,boxShadow:t===tab?"0 1px 4px rgba(0,0,0,.1)":"none",transition:"all .15s" }}>{tl[t]}</button>
+                ))}
+              </div>
+            )}
+              <button onClick={()=>setDm(p=>!p)} style={{ padding:"6px 12px",borderRadius:8,border:`0.5px solid ${bord}`,background:"transparent",cursor:"pointer",color:tm,fontSize:13 }}>{dm?"☀ Light":"☾ Dark"}</button>
+            </div>
+        </div>
+
+        <div style={{ padding:"24px 24px 40px",display:"flex",flexDirection:"column",gap:24 }}>
+
+          {/* ── TEAM METRICS VIEW ── */}
+          {sel==="team"&&(()=>{
+            const lastM = teamMonthly.filter(r=>r.tph!=null||r.csat!=null).slice(-1)[0]||{};
+            const prevM = teamMonthly.filter(r=>r.tph!=null||r.csat!=null).slice(-2)[0]||{};
+            const lastW = teamWeekly.filter(r=>r.tph!=null||r.csat!=null).slice(-1)[0]||{};
+            const prevW = teamWeekly.filter(r=>r.tph!=null||r.csat!=null).slice(-2)[0]||{};
+            const mCsatD = lastM.csat!=null&&prevM.csat!=null ? +(lastM.csat-prevM.csat).toFixed(1) : null;
+            const mIqsD  = lastM.iqs !=null&&prevM.iqs !=null ? +(lastM.iqs -prevM.iqs ).toFixed(1) : null;
+            const mTphD  = lastM.tph !=null&&prevM.tph !=null ? +(lastM.tph -prevM.tph ).toFixed(2) : null;
+            const mAhtD  = lastM.ahtSec!=null&&prevM.ahtSec!=null ? -(lastM.ahtSec-prevM.ahtSec) : null;
+            const wCsatD = lastW.csat!=null&&prevW.csat!=null ? +(lastW.csat-prevW.csat).toFixed(1) : null;
+            const wIqsD  = lastW.iqs !=null&&prevW.iqs !=null ? +(lastW.iqs -prevW.iqs ).toFixed(1) : null;
+            const wTphD  = lastW.tph !=null&&prevW.tph !=null ? +(lastW.tph -prevW.tph ).toFixed(2) : null;
+            const wAhtD  = lastW.ahtSec!=null&&prevW.ahtSec!=null ? -(lastW.ahtSec-prevW.ahtSec) : null;
+            return <>
+              {/* Weekly Metrics KPI cards + table */}
+              <div style={{ fontSize:11,fontWeight:600,color:tm,letterSpacing:.6,marginBottom:10 }}>WEEKLY METRICS — {lastW.week?.toUpperCase()||"LATEST"}</div>
+              <div style={{ display:"flex",gap:14,flexWrap:"wrap" }}>
+                <KPICard label="CSAT" value={lastW.csat!=null?lastW.csat.toFixed(1):null} unit="%" delta={wCsatD} icon="😊" metTarget={lastW.csat!=null&&lastW.csat>=80} target="80%" dm={dm} />
+                <KPICard label="IQS"  value={lastW.iqs !=null?lastW.iqs.toFixed(1) :null} unit="%" delta={wIqsD}  icon="⭐" metTarget={lastW.iqs !=null&&lastW.iqs >=85} target="85%" dm={dm} />
+                <KPICard label="TPH"  value={lastW.tph !=null?lastW.tph.toFixed(2) :null} unit=""  delta={wTphD}  icon="📞" metTarget={lastW.tph !=null&&lastW.tph >=5}  target="5"   dm={dm} />
+                <KPICard label="AHT"  value={fmtAHT(lastW.ahtSec)} unit="" delta={wAhtD!=null?+(wAhtD/60).toFixed(1):null} icon="⏱" metTarget={lastW.ahtSec!=null&&lastW.ahtSec<=720} target="12 min" dm={dm} />
+              </div>
+
+              {/* Weekly Metrics table */}
+              <div style={{ background:surf,borderRadius:14,padding:"20px",border:`0.5px solid ${bord}` }}>
+                <SectionHeader title="Weekly Metrics" dm={dm} action={<button onClick={()=>exportCSV(teamWeekly,"team_weekly.csv")} style={{padding:"6px 12px",borderRadius:8,fontSize:12,cursor:"pointer",border:`0.5px solid ${bord}`,background:"transparent",color:tm}}>↓ Export</button>} />
+                <TW dm={dm}>
+                  <thead><tr>{["Week","TPH","AHT","CSAT %","IQS %"].map(h=><Th key={h} dm={dm}>{h}</Th>)}</tr></thead>
+                  <tbody>
+                    {teamWeekly.map((r,i)=>(
+                      <tr key={i} style={{ background:i%2===0?"transparent":(dm?"rgba(255,255,255,.02)":"rgba(0,0,0,.01)") }}>
+                        <Td dm={dm}><strong>{r.week}</strong></Td>
+                        <Td dm={dm}>{r.tph!=null?<span style={{color:r.tph>=5?C.green:C.coral}}>{r.tph.toFixed(2)}</span>:"—"}</Td>
+                        <Td dm={dm}>{r.ahtSec!=null?<span style={{color:r.ahtSec<=720?C.green:C.coral}}>{fmtAHT(r.ahtSec)}</span>:"—"}</Td>
+                        <Td dm={dm}>{r.csat!=null?<Badge label={`${r.csat.toFixed(1)}%`} type={r.csat>=80?"good":"bad"}/>:"—"}</Td>
+                        <Td dm={dm}>{r.iqs !=null?<Badge label={`${r.iqs.toFixed(1)}%`}  type={r.iqs >=85?"good":"bad"}/>:"—"}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </TW>
+              </div>
+
+              {/* Monthly Comparison KPI cards + table */}
+              <div style={{ fontSize:11,fontWeight:600,color:tm,letterSpacing:.6,marginBottom:10,marginTop:8 }}>MONTHLY COMPARISON — {lastM.month?.toUpperCase()||"LATEST"}</div>
+              <div style={{ display:"flex",gap:14,flexWrap:"wrap" }}>
+                <KPICard label="CSAT" value={lastM.csat!=null?lastM.csat.toFixed(1):null} unit="%" delta={mCsatD} icon="😊" metTarget={lastM.csat!=null&&lastM.csat>=80} target="80%" dm={dm} />
+                <KPICard label="IQS"  value={lastM.iqs !=null?lastM.iqs.toFixed(1) :null} unit="%" delta={mIqsD}  icon="⭐" metTarget={lastM.iqs !=null&&lastM.iqs >=85} target="85%" dm={dm} />
+                <KPICard label="TPH"  value={lastM.tph !=null?lastM.tph.toFixed(2) :null} unit=""  delta={mTphD}  icon="📞" metTarget={lastM.tph !=null&&lastM.tph >=5}  target="5"   dm={dm} />
+                <KPICard label="AHT"  value={fmtAHT(lastM.ahtSec)} unit="" delta={mAhtD!=null?+(mAhtD/60).toFixed(1):null} icon="⏱" metTarget={lastM.ahtSec!=null&&lastM.ahtSec<=720} target="12 min" dm={dm} />
+              </div>
+
+              {/* Monthly Comparison table */}
+              <div style={{ background:surf,borderRadius:14,padding:"20px",border:`0.5px solid ${bord}` }}>
+                <SectionHeader title="Monthly Comparison" dm={dm} action={<button onClick={()=>exportCSV(teamMonthly,"team_monthly.csv")} style={{padding:"6px 12px",borderRadius:8,fontSize:12,cursor:"pointer",border:`0.5px solid ${bord}`,background:"transparent",color:tm}}>↓ Export</button>} />
+                <TW dm={dm}>
+                  <thead><tr>{["Month","TPH","AHT","CSAT %","IQS %"].map(h=><Th key={h} dm={dm}>{h}</Th>)}</tr></thead>
+                  <tbody>
+                    {teamMonthly.map((r,i)=>(
+                      <tr key={i} style={{ background:i%2===0?"transparent":(dm?"rgba(255,255,255,.02)":"rgba(0,0,0,.01)") }}>
+                        <Td dm={dm}><strong>{r.month}</strong></Td>
+                        <Td dm={dm}>{r.tph!=null?<span style={{color:r.tph>=5?C.green:C.coral,fontWeight:500}}>{r.tph.toFixed(2)}</span>:"—"}</Td>
+                        <Td dm={dm}>{r.ahtSec!=null?<span style={{color:r.ahtSec<=720?C.green:C.coral,fontWeight:500}}>{fmtAHT(r.ahtSec)}</span>:"—"}</Td>
+                        <Td dm={dm}>{r.csat!=null?<Badge label={`${r.csat.toFixed(1)}%`} type={r.csat>=80?"good":"bad"}/>:"—"}</Td>
+                        <Td dm={dm}>{r.iqs !=null?<Badge label={`${r.iqs.toFixed(1)}%`}  type={r.iqs >=85?"good":"bad"}/>:"—"}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </TW>
+              </div>
+
+              {/* Trend charts */}
+              <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(320px,1fr))",gap:16 }}>
+                {[["CSAT % Trend","csat",C.teal],["IQS % Trend","iqs",C.purple],["TPH Trend","tph",C.blue]].map(([title,key,color])=>(
+                  <div key={key} style={cs(dm)}>
+                    <SectionHeader title={title} dm={dm} />
+                    <ResponsiveContainer width="100%" height={180}>
+                      <LineChart data={teamWeekly.filter(r=>r[key]!=null)} margin={{top:4,right:16,left:-10,bottom:0}}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={dm?"#1E2D3D":"#f0f0ea"} />
+                        <XAxis dataKey="week" tick={{fontSize:10,fill:tm}} interval={2}/>
+                        <YAxis tick={{fontSize:11,fill:tm}} />
+                        <Tooltip contentStyle={{background:surf,border:`0.5px solid ${bord}`,borderRadius:8,fontSize:12}} />
+                        <Line type="monotone" dataKey={key} stroke={color} strokeWidth={2.5} dot={false} activeDot={{r:5}} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                ))}
+                <div style={cs(dm)}>
+                  <SectionHeader title="AHT Trend (min)" dm={dm} />
+                  <ResponsiveContainer width="100%" height={180}>
+                    <LineChart data={teamWeekly.filter(r=>r.ahtSec!=null).map(r=>({...r,ahtMin:Math.round(r.ahtSec/60*10)/10}))} margin={{top:4,right:16,left:-10,bottom:0}}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={dm?"#1E2D3D":"#f0f0ea"} />
+                      <XAxis dataKey="week" tick={{fontSize:10,fill:tm}} interval={2}/>
+                      <YAxis tick={{fontSize:11,fill:tm}} />
+                      <Tooltip contentStyle={{background:surf,border:`0.5px solid ${bord}`,borderRadius:8,fontSize:12}} formatter={v=>[`${v} min`,"AHT"]} />
+                      <Line type="monotone" dataKey="ahtMin" stroke={C.amber} strokeWidth={2.5} dot={false} activeDot={{r:5}} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </>;
+          })()}
+
+          {/* ── OVERVIEW ── */}
+          {tab==="overview"&&<>
+            <div style={{ display:"flex",gap:14,flexWrap:"wrap" }}>
+              <KPICard label="CSAT"  value={lastM.csat!=null?lastM.csat.toFixed(1):null} unit="%" delta={csatDelta} icon="😊" metTarget={lastM.csat!=null&&lastM.csat>=TARGETS.csat} target={`${TARGETS.csat}%`} dm={dm} />
+              <KPICard label="IQS"   value={lastM.iqs !=null?lastM.iqs.toFixed(1) :null} unit="%" delta={iqsDelta}  icon="⭐" metTarget={lastM.iqs !=null&&lastM.iqs >=TARGETS.iqs}  target={`${TARGETS.iqs}%`}  dm={dm} />
+              <KPICard label="TPH"   value={lastM.tph!=null?lastM.tph.toFixed(2):null} unit="" delta={tphDelta} icon="📞" metTarget={lastM.tph!=null&&lastM.tph>=TARGETS.tph} target={`${TARGETS.tph}`} dm={dm} />
+              <KPICard label="AHT"   value={fmtAHT(lastM.ahtSec)} unit="" delta={ahtDelta!=null?+(ahtDelta/60).toFixed(1):null} icon="⏱" metTarget={lastM.ahtSec!=null&&lastM.ahtSec<=TARGETS.ahtSec} target="12 min" dm={dm} />
+            </div>
+
+            {/* Weekly */}
+            <div style={{ background:surf,borderRadius:14,padding:"20px",border:`0.5px solid ${bord}` }}>
+              <SectionHeader title="Weekly Metrics" dm={dm} action={<div style={{display:"flex",gap:8}}><button onClick={()=>setShowWF(p=>!p)} style={{padding:"6px 12px",borderRadius:8,fontSize:12,cursor:"pointer",border:`0.5px solid ${bord}`,background:"transparent",color:C.blue}}>+ Add Row</button><button onClick={()=>exportCSV(ad.weekly,"weekly.csv")} style={{padding:"6px 12px",borderRadius:8,fontSize:12,cursor:"pointer",border:`0.5px solid ${bord}`,background:"transparent",color:tm}}>↓ Export</button></div>} />
+              {showWF&&<ManualForm type="weekly" dm={dm} onClose={()=>setShowWF(false)} onAdd={row=>setAD("weekly",p=>[...p,row])} />}
+              <TW dm={dm}>
+                <thead><tr>{["Week","TPH","AHT (min)","CSAT %","IQS %","DSAT"].map(h=><Th key={h} dm={dm}>{h}</Th>)}</tr></thead>
+                <tbody>
+                  {(ad.weekly||[]).map((r,i)=>(
+                    <tr key={i} style={{ background:i%2===0?"transparent":(dm?"rgba(255,255,255,.02)":"rgba(0,0,0,.01)") }}>
+                      <Td dm={dm}><strong>{r.week}</strong></Td>
+                      <Td dm={dm}>{r.tph!=null?r.tph.toFixed(2):"—"}</Td>
+                      <Td dm={dm}>{r.ahtSec!=null?<span style={{color:r.ahtSec<=TARGETS.ahtSec?C.green:C.coral}}>{fmtAHT(r.ahtSec)}</span>:"—"}</Td>
+                      <Td dm={dm}>{r.csat!=null?<Badge label={`${r.csat.toFixed(1)}%`} type={r.csat>=80?"good":"bad"}/>:"—"}</Td>
+                      <Td dm={dm}>{r.iqs !=null?<Badge label={`${r.iqs.toFixed(1)}%`}  type={r.iqs >=85?"good":"bad"}/>:"—"}</Td>
+                      <Td dm={dm}>{r.dsat!=null?<Badge label={r.dsat} type={r.dsat<=2?"good":"bad"}/>:"—"}</Td>
+                    </tr>
+                  ))}
+                  {!(ad.weekly||[]).length&&<tr><td colSpan={6} style={{textAlign:"center",padding:24,color:tm,fontSize:13}}>No weekly data — link a Google Sheet or add rows manually.</td></tr>}
+                </tbody>
+              </TW>
+            </div>
+
+            {/* Monthly */}
+            <div style={{ background:surf,borderRadius:14,padding:"20px",border:`0.5px solid ${bord}` }}>
+              <SectionHeader title="Monthly Comparison" dm={dm} action={<div style={{display:"flex",gap:8}}><button onClick={()=>setShowMF(p=>!p)} style={{padding:"6px 12px",borderRadius:8,fontSize:12,cursor:"pointer",border:`0.5px solid ${bord}`,background:"transparent",color:C.blue}}>+ Add Row</button><button onClick={()=>exportCSV(ad.monthly,"monthly.csv")} style={{padding:"6px 12px",borderRadius:8,fontSize:12,cursor:"pointer",border:`0.5px solid ${bord}`,background:"transparent",color:tm}}>↓ Export</button></div>} />
+              {showMF&&<ManualForm type="monthly" dm={dm} onClose={()=>setShowMF(false)} onAdd={row=>setAD("monthly",p=>[...p,row])} />}
+              <TW dm={dm}>
+                <thead><tr>{["Month","TPH","AHT (min)","CSAT %","IQS %"].map(h=><Th key={h} dm={dm}>{h}</Th>)}</tr></thead>
+                <tbody>
+                  {(ad.monthly||[]).map((r,i)=>(
+                    <tr key={i}>
+                      <Td dm={dm}><strong>{r.month}</strong></Td>
+                      <Td dm={dm}>{r.tph!=null?<span style={{color:r.tph>=TARGETS.tph?C.green:C.coral}}>{r.tph.toFixed(2)}</span>:"—"}</Td>
+                      <Td dm={dm}>{r.ahtSec!=null?<span style={{color:r.ahtSec<=TARGETS.ahtSec?C.green:C.coral}}>{fmtAHT(r.ahtSec)}</span>:"—"}</Td>
+                      <Td dm={dm}>{r.csat!=null?<Badge label={`${r.csat.toFixed(1)}%`} type={r.csat>=80?"good":"bad"}/>:"—"}</Td>
+                      <Td dm={dm}>{r.iqs !=null?<Badge label={`${r.iqs.toFixed(1)}%`}  type={r.iqs >=85?"good":"bad"}/>:"—"}</Td>
+                    </tr>
+                  ))}
+                  {!(ad.monthly||[]).length&&<tr><td colSpan={5} style={{textAlign:"center",padding:24,color:tm,fontSize:13}}>No monthly data yet.</td></tr>}
+                </tbody>
+              </TW>
+            </div>
+
+          </>}
+
+          {/* ── TRENDS ── */}
+          {tab==="charts"&&(
+            <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(340px,1fr))",gap:16 }}>
+              {[["CSAT % Trend","csat",C.teal],["IQS % Trend","iqs",C.purple],["TPH Trend","tph",C.blue]].map(([title,key,color])=>(
+                <div key={key} style={cs(dm)}>
+                  <SectionHeader title={title} dm={dm} />
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={(ad.weekly||[]).filter(r=>r[key]!=null)} margin={{top:4,right:16,left:-10,bottom:0}}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={dm?"#1E2D3D":"#f0f0ea"} />
+                      <XAxis dataKey="week" tick={{fontSize:11,fill:tm}} />
+                      <YAxis tick={{fontSize:11,fill:tm}} />
+                      <Tooltip contentStyle={{background:surf,border:`0.5px solid ${bord}`,borderRadius:8,fontSize:12}} />
+                      <Line type="monotone" dataKey={key} stroke={color} strokeWidth={2.5} dot={{r:4,fill:color}} activeDot={{r:6}} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              ))}
+              {/* AHT chart uses ahtSec converted to minutes */}
+              <div style={cs(dm)}>
+                <SectionHeader title="AHT Trend (min)" dm={dm} />
+                <ResponsiveContainer width="100%" height={200}>
+                  <LineChart data={(ad.weekly||[]).filter(r=>r.ahtSec!=null).map(r=>({...r,ahtMin:Math.round(r.ahtSec/60*10)/10}))} margin={{top:4,right:16,left:-10,bottom:0}}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={dm?"#1E2D3D":"#f0f0ea"} />
+                    <XAxis dataKey="week" tick={{fontSize:11,fill:tm}} />
+                    <YAxis tick={{fontSize:11,fill:tm}} />
+                    <Tooltip contentStyle={{background:surf,border:`0.5px solid ${bord}`,borderRadius:8,fontSize:12}} formatter={v=>[`${v} min`,"AHT"]} />
+                    <Line type="monotone" dataKey="ahtMin" stroke={C.amber} strokeWidth={2.5} dot={{r:4,fill:C.amber}} activeDot={{r:6}} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {/* ── REVIEWS ── */}
+          {tab==="reviews"&&<>
+            <div style={{ background:surf,borderRadius:14,padding:"16px 20px",border:`0.5px solid ${bord}`,display:"flex",gap:12,flexWrap:"wrap",alignItems:"center" }}>
+              <input placeholder="Search reviews…" value={search} onChange={e=>setSearch(e.target.value)} style={{ flex:"1 1 200px",padding:"8px 12px",borderRadius:8,fontSize:13,border:`0.5px solid ${bord}`,background:dm?"#0D1521":"#fff",color:tp }} />
+              {[["Channel",channels,chFilter,setChFilter],["Reason",reasons,reFilter,setReFilter]].map(([label,opts,val,set])=>(
+                <div key={label} style={{ display:"flex",alignItems:"center",gap:6 }}>
+                  <label style={{fontSize:12,color:tm}}>{label}:</label>
+                  <select value={val} onChange={e=>set(e.target.value)} style={{padding:"7px 10px",borderRadius:8,fontSize:13,border:`0.5px solid ${bord}`,background:dm?"#0D1521":"#fff",color:tp,cursor:"pointer"}}>
+                    {opts.map(o=><option key={o}>{o}</option>)}
+                  </select>
+                </div>
+              ))}
+            </div>
+
+            {/* IQS */}
+            <div style={{ background:surf,borderRadius:14,padding:"20px",border:`0.5px solid ${bord}` }}>
+              <SectionHeader title="IQS Reviews" dm={dm} action={<div style={{display:"flex",gap:8}}><CSVUpload label="Upload IQS CSV" dm={dm} onParsed={rows=>{const m=rows.map(r=>({id:r.review_id||r.id,reviewer:r.reviewer,score:parseFloat(r.score||r.review_score)||0,date:r.date||r.review_created||""}));setAD("iqs",p=>[...p,...m]);}} /><button onClick={()=>exportCSV(ad.iqs,"iqs.csv")} style={{padding:"6px 12px",borderRadius:8,fontSize:12,cursor:"pointer",border:`0.5px solid ${bord}`,background:"transparent",color:tm}}>↓ Export</button></div>} />
+              <TW dm={dm}>
+                <thead><tr>{["Review ID","Reviewer","Score","Date"].map(h=><Th key={h} dm={dm}>{h}</Th>)}</tr></thead>
+                <tbody>
+                  {(ad.iqs||[]).map((r,i)=>(
+                    <tr key={i}>
+                      <Td dm={dm}><span style={{fontFamily:"monospace",fontSize:12,color:dm?"#66aaff":C.blue}}>{r.id}</span></Td>
+                      <Td dm={dm}>{r.reviewer}</Td>
+                      <Td dm={dm}><Stars score={r.score}/></Td>
+                      <Td dm={dm}>{r.date}</Td>
+                    </tr>
+                  ))}
+                  {!(ad.iqs||[]).length&&<tr><td colSpan={4} style={{textAlign:"center",padding:24,color:tm,fontSize:13}}>No IQS reviews yet.</td></tr>}
+                </tbody>
+              </TW>
+            </div>
+
+            {/* CSAT */}
+            <div style={{ background:surf,borderRadius:14,padding:"20px",border:`0.5px solid ${bord}` }}>
+              <SectionHeader title="CSAT Reviews" dm={dm} action={<div style={{display:"flex",gap:8}}><CSVUpload label="Upload CSAT CSV" dm={dm} onParsed={rows=>{const m=rows.map(r=>({date:r.date||"",channel:r.ticket_channel||r.channel||"",reason:r.contact_reason_for_customers||r.contact_reason||r.reason||"",satisfaction:(r.changes___new_value||r.satisfaction||"")==="good"?"Good":"Bad",comment:r.customer_s_comment||r.comment||"",ticketId:r.ticket_id||""}));setAD("csat",p=>[...p,...m]);}} /><button onClick={()=>exportCSV(filtCSAT,"csat.csv")} style={{padding:"6px 12px",borderRadius:8,fontSize:12,cursor:"pointer",border:`0.5px solid ${bord}`,background:"transparent",color:tm}}>↓ Export</button></div>} />
+              <TW dm={dm}>
+                <thead><tr>{["Date","Channel","Reason","Satisfaction","Comment"].map(h=><Th key={h} dm={dm}>{h}</Th>)}</tr></thead>
+                <tbody>
+                  {filtCSAT.map((r,i)=>(
+                    <tr key={i}>
+                      <Td dm={dm}>{r.date}</Td>
+                      <Td dm={dm}><Badge label={r.channel} type="info"/></Td>
+                      <Td dm={dm}>{r.reason}</Td>
+                      <Td dm={dm}><Badge label={r.satisfaction} type={r.satisfaction?.toLowerCase()==="good"?"good":"bad"}/></Td>
+                      <Td dm={dm}><span style={{color:tm,fontStyle:"italic",fontSize:12,maxWidth:280,display:"block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.comment}>{r.comment||"—"}</span></Td>
+                    </tr>
+                  ))}
+                  {!filtCSAT.length&&<tr><td colSpan={5} style={{textAlign:"center",padding:24,color:tm,fontSize:13}}>No reviews match your filters.</td></tr>}
+                </tbody>
+              </TW>
+            </div>
+
+            {/* DSAT */}
+            <div style={{ background:surf,borderRadius:14,padding:"20px",border:`0.5px solid ${bord}` }}>
+              <SectionHeader title="DSAT Feedback & Coaching" dm={dm} />
+              {(ad.dsat||[]).map((r,i)=>(
+                <div key={i} style={{ border:`0.5px solid ${dm?"#3A2A2A":C.coralLight}`,background:dm?"#261818":"#fffbfb",borderRadius:10,padding:"14px 16px",marginBottom:10,borderLeft:`3px solid ${C.coral}` }}>
+                  <div style={{ display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8 }}>
+                    <div>
+                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                        {r.week&&<span style={{fontWeight:700,fontSize:12,color:C.coral,background:dm?"#3A1A1A":C.coralLight,padding:"2px 8px",borderRadius:20}}>{r.week}</span>}
+                        <span style={{fontFamily:"monospace",fontSize:12,color:tm}}>#{r.ticketId}</span>
+                      </div>
+                      <p style={{margin:"0 0 4px",fontWeight:500,fontSize:13,color:tp}}>{r.summary}</p>
+                      <p style={{margin:0,fontSize:12,color:tm}}>📋 {r.coaching}</p>
+                    </div>
+                    <Badge label="DSAT" type="bad"/>
+                  </div>
+                </div>
+              ))}
+              {!(ad.dsat||[]).length&&<p style={{color:tm,fontSize:13,margin:0}}>No DSAT entries for this agent.</p>}
+            </div>
+          </>}
+
+          {/* ── NOTES ── */}
+          {tab==="notes"&&(
+            <div style={{ background:surf,borderRadius:14,padding:"20px",border:`0.5px solid ${bord}` }}>
+              <SectionHeader title={`Notes — ${curAgent?.name}`} dm={dm} />
+              <textarea value={ad.notes||""} onChange={e=>setAD("notes",e.target.value)} placeholder="Add coaching notes, observations, follow-ups…" style={{ width:"100%",minHeight:320,padding:"14px",borderRadius:10,fontSize:14,lineHeight:1.7,border:`0.5px solid ${bord}`,background:dm?"#0D1521":C.gray50,color:tp,resize:"vertical",boxSizing:"border-box",fontFamily:"inherit" }} />
+              <div style={{fontSize:12,color:tm,marginTop:8}}>Notes are saved automatically per agent.</div>
+            </div>
+          )}
+
+        </div>
+      </main>
+    </div>
+  );
+}
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(App));
+  </script>
+</body>
+</html>
